@@ -1,3 +1,4 @@
+from api.v1.endpoints import reports
 from fastapi import APIRouter
 from api.v1.endpoints import health
 from api.v1.endpoints import auth
@@ -11,3 +12,4 @@ router.include_router(auth.router, prefix="/api", tags=["auth"])
 router.include_router(users.router, prefix="/api", tags=["users"])
 router.include_router(organization.router, prefix="/api", tags=["organization"])
 router.include_router(webhook.router, prefix="/api", tags=["webhook"])
+router.include_router(reports.router, prefix="/api", tags=["reports"])
