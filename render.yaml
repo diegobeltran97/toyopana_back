@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: toyopana-api
+    runtime: python
+    region: oregon  # Change to your preferred region (oregon, frankfurt, singapore, ohio)
+    plan: free  # Options: free, starter, standard, pro
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"  # Render supports 3.8-3.12, using 3.11 for stability
+      - key: ENVIRONMENT
+        value: production
+      # IMPORTANT: Add these secrets manually in Render Dashboard
+      # Do NOT commit sensitive values to git
+      # - SUPABASE_URL
+      # - SUPABASE_SERVICE_ROLE_KEY
