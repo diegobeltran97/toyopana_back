@@ -4,12 +4,12 @@ services:
     runtime: python
     region: oregon  # Change to your preferred region (oregon, frankfurt, singapore, ohio)
     plan: free  # Options: free, starter, standard, pro
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11"  # Render supports 3.8-3.12, using 3.11 for stability
+        value: "3.12.0"  # Use 3.12 for compatibility with pre-built wheels
       - key: ENVIRONMENT
         value: production
       # IMPORTANT: Add these secrets manually in Render Dashboard
