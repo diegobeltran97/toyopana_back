@@ -81,6 +81,11 @@ class PipeFyDataRepository:
                         label
                         type
                     }
+                    array_value
+                    filled_at
+                    updated_at
+                    report_value
+                   
                 }
                 assignees {
                     id

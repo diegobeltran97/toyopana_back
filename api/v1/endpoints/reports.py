@@ -21,8 +21,19 @@ async def get_reports(organization_id: str, limit: int = 100):
             organization_id=organization_id,
             limit=limit
         )
+        #this is a temporary solution
+        data_response = []
 
-        return events
+        for event in events:
+            event_data = {
+                "events": event,
+                "data_user": event.get("raw_payload", {}).get("user_data", ""),
+                "data_car": event.get("raw_payload", {}).get("user_car_information", ""),
+            }
+            data_response.append(event_data)
+
+
+        return data_response
 
     except Exception as e:
         logger.error(f"Error fetching events for organization {organization_id}: {str(e)}")

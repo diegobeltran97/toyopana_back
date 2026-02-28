@@ -97,3 +97,46 @@ class PipefyWebhookData(BaseModel):
 
 class PipefyReceivingWebhookData(BaseModel):
     data: PipefyWebhookData
+
+    
+class PhaseData(BaseModel):
+    """Phase information from Pipefy card"""
+    id: str
+    name: str
+
+
+class FieldData(BaseModel):
+    """Field data from Pipefy card"""
+    name: str
+    value: Optional[Any] = None
+    field: Optional[Dict[str, Any]] = None
+    array_value: Optional[List[Any]] = None
+    filled_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    report_value: Optional[Any] = None
+
+
+class NestedCardData(BaseModel):
+    """Nested card data fetched from connected card ID"""
+    id: str
+    title: str
+    current_phase: Optional[PhaseData] = None
+    fields: Optional[List[FieldData]] = None
+    url: Optional[str] = None
+
+
+class CardData(BaseModel):
+    """Main card data to be saved in database"""
+    id: str
+    title: str
+    current_phase: Optional[PhaseData] = None
+    pipe: Optional[str] = None
+    fields: Optional[List[FieldData]] = None
+    user_data: Optional[NestedCardData] = None
+    user_car_information: Optional[NestedCardData] = None
+    assignees: Optional[List[Dict[str, Any]]] = None
+    labels: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    due_date: Optional[str] = None
+    url: Optional[str] = None

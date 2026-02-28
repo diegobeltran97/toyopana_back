@@ -189,8 +189,6 @@ async def get_card_events(
              summary="Receive Pipefy Webhook",
              tags=["webhook"])
 async def receive_pipefy_webhook(payload: PipefyReceivingWebhookData):
-    phase_from = payload.data.from_.name
-    phase_to = payload.data.to.name
     card_id = payload.data.card.id
     
     
