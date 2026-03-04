@@ -1,11 +1,12 @@
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, HTTPException, status, Request, BackgroundTasks
 from schemas.webhook import (
     PipefyReceivingWebhookData,
-    PipefyWebhookPayload,
-    PipefyEventResponse
+    PipefyWebhookPayload
 )
+from schemas.pipefy_events import PipefyEventResponse
 from repositories.pipefy_events import PipefyEventsRepository
 from services.pipefy_service import process_card_details
+from services.whapify_service import send_delivery_notification
 
 from typing import Dict, Any
 import logging

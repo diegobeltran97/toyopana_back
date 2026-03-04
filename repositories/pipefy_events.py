@@ -1,6 +1,7 @@
 import httpx
 from typing import Optional, Dict, Any
 from core.config import settings
+from schemas.pipefy_events import PipefyEventUpdateActions, PipefyEventResponse
 
 
 class PipefyEventsRepository:
@@ -23,7 +24,8 @@ class PipefyEventsRepository:
         event_type: str,
         raw_payload: Dict[str, Any],
         pipefy_card_id: Optional[str] = None,
-        pipe_id: Optional[str] = None
+        pipe_id: Optional[str] = None,
+        actions_taken: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Create a new Pipefy event record in the database
@@ -44,6 +46,9 @@ class PipefyEventsRepository:
                 "event_type": event_type,
                 "raw_payload": raw_payload,
             }
+            
+            if actions_taken:
+                payload["actions_taken"] = actions_taken
 
             if pipefy_card_id:
                 payload["pipefy_card_id"] = pipefy_card_id
@@ -117,3 +122,36 @@ class PipefyEventsRepository:
             response.raise_for_status()
             return response.json()
 
+
+    async def update_event_actions_by_id(
+        self,
+        event_id: str,
+        update_data: PipefyEventUpdateActions
+    ) -> PipefyEventResponse:
+        """
+        Update the actions taken for a specific event by ID
+
+        Args:
+            event_id: The event UUID to update
+            update_data: PipefyEventUpdateActions schema with actions_taken data
+
+        Returns:
+            The updated event record as PipefyEventResponse
+
+        Raises:
+            httpx.HTTPError: If the request fails
+        """
+        payload = update_data.model_dump(exclude_unset=True)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{self.base_url}/pipefy_events?id=eq.{event_id}",
+                json=payload,
+                headers=self.headers
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            event_data = result[0] if isinstance(result, list) else result
+
+            return PipefyEventResponse(**event_data)

@@ -41,28 +41,6 @@ class PipefyWebhookPayload(BaseModel):
     data: PipefyWebhookData
 
 
-class PipefyEventCreate(BaseModel):
-    """Schema for creating a pipefy_events record - matches database schema"""
-    organization_id: str
-    pipefy_card_id: Optional[str] = None
-    pipe_id: Optional[str] = None
-    event_type: str
-    raw_payload: Dict[str, Any]
-
-
-class PipefyEventResponse(BaseModel):
-    """Response schema for pipefy_events"""
-    id: str
-    organization_id: str
-    pipefy_card_id: Optional[str]
-    pipe_id: Optional[str]
-    event_type: str
-    raw_payload: Dict[str, Any]
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 """ from here is my own code"""
 
 class PhaseRef(BaseModel):

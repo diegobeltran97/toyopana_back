@@ -1,3 +1,4 @@
+from schemas.pipefy_events import PipefyEventUpdateActions, PipefyEventResponse
 from repositories.pipefy_data import PipeFyDataRepository
 from repositories.pipefy_events import PipefyEventsRepository
 from schemas.webhook import (
@@ -11,10 +12,87 @@ from schemas.webhook import (
     FieldData
 )
 from core.config import settings
+from typing import Dict, Any
+
+
+async def update_event_actions(
+    event_id: str,
+    actions_taken: Dict[str, Any]
+) -> PipefyEventResponse:
+    """
+    Update the actions taken for a specific event by event ID
+
+    Args:
+        event_id: The UUID of the event to update
+        actions_taken: Dictionary of actions taken (e.g., whatsapp_sent, message_id, etc.)
+
+    Returns:
+        Updated event record
+
+    Example:
+        await update_event_actions(
+            event_id="550e8400-e29b-41d4-a716-446655440000",
+            actions_taken={
+                "whatsapp_sent": True,
+                "message_id": "msg_abc123",
+                "sent_at": "2024-01-15T10:30:00Z"
+            }
+        )
+    """
+    repo = PipefyEventsRepository()
+
+    # Create update schema
+    update_data = PipefyEventUpdateActions(actions_taken=actions_taken)
+
+    # Update the event
+    updated_event = await repo.update_event_actions_by_id(event_id, update_data)
+
+    return updated_event
+
+
+async def update_event_actions_by_card_id(
+    pipefy_card_id: str,
+    actions_taken: Dict[str, Any]
+) -> PipefyEventResponse:
+    """
+    Find the most recent event for a card and update its actions
+
+    Args:
+        pipefy_card_id: The Pipefy card ID
+        actions_taken: Dictionary of actions taken
+
+    Returns:
+        Updated event record
+
+    Raises:
+        HTTPException: If no event found for the card
+
+    Example:
+        await update_event_actions_by_card_id(
+            pipefy_card_id="123456",
+            actions_taken={
+                "whatsapp_sent": True,
+                "message_id": "msg_abc123",
+                "sent_at": datetime.utcnow().isoformat()
+            }
+        )
+    """
+    repo = PipefyEventsRepository()
+
+    # Get the most recent event for this card (limit=1 returns the latest)
+    events = await repo.get_events_by_card(pipefy_card_id=pipefy_card_id, limit=1)
+
+    if not events or len(events) == 0:
+        raise Exception(f"No event found for card {pipefy_card_id}")
+
+    # Get the event ID from the most recent event
+    event_id = events[0].get("id")
+
+    # Update the actions
+    return await update_event_actions(event_id, actions_taken)
 
 async def process_card_details(card_id: str):
-    # Placeholder for processing card details
-    
+     # Placeholder for processing card details
     
     # Initialize repository
     pipefy_repo = PipeFyDataRepository(settings.PIPEFY_API_TOKEN)
