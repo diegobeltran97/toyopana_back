@@ -61,6 +61,7 @@ async def supabase_register_user(
                         "name": name,
                         "phone": phone,
                         "address": address,
+                        "organization_id": "7ace5443-06c0-4ba2-b495-88262238466a",  # organization_id is handled by the DB trigger (defaults to toyopanatest)
                         # organization_id is handled by the DB trigger (defaults to toyopanatest)
                     },
                 },
