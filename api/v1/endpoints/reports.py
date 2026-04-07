@@ -27,8 +27,8 @@ async def get_reports(organization_id: str, limit: int = 100):
         for event in events:
             event_data = {
                 "events": event,
-                "data_user": event.get("raw_payload", {}).get("user_data", ""),
-                "data_car": event.get("raw_payload", {}).get("user_car_information", ""),
+                "data_user": event.get("raw_payload", {}).get("user_data"),
+                "data_car": event.get("raw_payload", {}).get("user_car_information"),
             }
             data_response.append(event_data)
 
