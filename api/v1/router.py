@@ -6,6 +6,7 @@ from api.v1.endpoints import users
 from api.v1.endpoints import organization
 from api.v1.endpoints import webhook
 from api.v1.endpoints import whatsapp
+from api.v1.endpoints import pipefy
 
 router = APIRouter()
 router.include_router(health.router, prefix="/api", tags=["health"])
@@ -15,3 +16,4 @@ router.include_router(organization.router, prefix="/api", tags=["organization"])
 router.include_router(webhook.router, prefix="/api", tags=["webhook"])
 router.include_router(reports.router, prefix="/api", tags=["reports"])
 router.include_router(whatsapp.router, prefix="/api", tags=["whatsapp"])
+router.include_router(pipefy.router, prefix="/api/pipefy", tags=["pipefy"])

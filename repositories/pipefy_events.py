@@ -81,7 +81,11 @@ class PipefyEventsRepository:
         Returns:
             List of event records
         """
-        async with httpx.AsyncClient() as client:
+        # Configure httpx client with increased limits for large JSON payloads
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
+        ) as client:
             response = await client.get(
                 f"{self.base_url}/pipefy_events",
                 params={
@@ -155,3 +159,39 @@ class PipefyEventsRepository:
             event_data = result[0] if isinstance(result, list) else result
 
             return PipefyEventResponse(**event_data)
+
+    async def bulk_create_events(
+        self,
+        events: list[Dict[str, Any]]
+    ) -> list[Dict[str, Any]]:
+        """
+        Create multiple Pipefy event records in a single request
+
+        Args:
+            events: List of event dictionaries to create
+                Each event should contain:
+                - organization_id: str
+                - event_type: str
+                - raw_payload: dict
+                - pipefy_card_id: str (optional)
+                - pipe_id: str (optional)
+                - actions_taken: dict (optional)
+
+        Returns:
+            List of created event records
+
+        Raises:
+            httpx.HTTPError: If the request fails
+        """
+        if not events:
+            return []
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/pipefy_events",
+                json=events,
+                headers=self.headers
+            )
+            response.raise_for_status()
+
+            return response.json()

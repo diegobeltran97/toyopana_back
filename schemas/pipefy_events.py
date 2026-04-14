@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 
@@ -108,3 +108,57 @@ class PipefyEventDB(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SyncCardsRequest(BaseModel):
+    """
+    Request schema for syncing cards from a Pipefy phase
+    """
+    phase_id: str = Field(..., description="Pipefy phase ID to sync cards from")
+    organization_id: str = Field(..., description="UUID of the organization")
+    cursor: Optional[str] = Field(None, description="Pagination cursor from previous response (for fetching next page)")
+    limit: int = Field(default=50, ge=1, le=50, description="Number of cards to fetch (max 50 due to Pipefy limit)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "phase_id": "341972150",
+                "organization_id": "7ace5443-06c0-4ba2-b495-88262238466a",
+                "cursor": None,
+                "limit": 50
+            }
+        }
+
+
+class SyncCardsResponse(BaseModel):
+    """
+    Response schema for card sync operation
+    """
+    success: bool = Field(..., description="Whether the sync was successful")
+    phase_id: str = Field(..., description="The phase ID that was synced")
+    phase_name: Optional[str] = Field(None, description="The name of the phase")
+    organization_id: str = Field(..., description="The organization ID")
+    total_cards_in_phase: Optional[int] = Field(None, description="Total number of cards in the phase")
+    total_cards_fetched: int = Field(..., description="Total number of cards fetched from Pipefy in this request")
+    total_events_created: int = Field(..., description="Total number of events created in database")
+    cards_synced: List[str] = Field(default_factory=list, description="List of card IDs that were synced")
+    has_more_pages: bool = Field(default=False, description="Whether there are more cards to fetch")
+    next_cursor: Optional[str] = Field(None, description="Cursor for fetching next page of cards")
+    error: Optional[str] = Field(None, description="Error message if sync failed")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "phase_id": "341972150",
+                "phase_name": "Out for Delivery",
+                "organization_id": "7ace5443-06c0-4ba2-b495-88262238466a",
+                "total_cards_in_phase": 125,
+                "total_cards_fetched": 50,
+                "total_events_created": 50,
+                "cards_synced": ["123456", "123457", "123458"],
+                "has_more_pages": True,
+                "next_cursor": "eyJjdXJzb3IiOiIxMjM0NTY3In0=",
+                "error": None
+            }
+        }

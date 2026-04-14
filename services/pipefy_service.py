@@ -93,20 +93,37 @@ async def update_event_actions_by_card_id(
 
 async def process_card_details(card_id: str):
      # Placeholder for processing card details
-    
+
     # Initialize repository
     pipefy_repo = PipeFyDataRepository(settings.PIPEFY_API_TOKEN)
 
     # Get card details
     card_data = await pipefy_repo.get_card_details(card_id)
     
+    print(f"Fetched card details for card ID {card_id}: {card_data}")  # Debugging output
+
     #First we'll get the card that array values is different from null,
     field_maping = card_data.get("fields", [])
     field_to_value = {field["field"]["id"]: field["array_value"][0] for field in field_maping if field.get("array_value") is not None}
-    
+
     print("Field to Value Mapping:", field_to_value)  # Debugging output
-    user_data = await pipefy_repo.get_card_details(str(field_to_value.get("cliente_a_recibir")))
-    user_car_information = await pipefy_repo.get_card_details(str(field_to_value.get("auto_a_recibit")))
+
+    # Fetch nested cards with error handling
+    user_data = None
+    user_car_information = None
+
+    if "nombre" in field_to_value:
+        try:
+            user_data = await pipefy_repo.get_card_details(str(field_to_value.get("nombre")))
+            print(f"Fetched user_data: {user_data}")  # Debugging output
+        except Exception as e:
+            print(f"Warning: Could not fetch user_data card: {str(e)}")
+
+    if "auto_a_recibit" in field_to_value:
+        try:
+            user_car_information = await pipefy_repo.get_card_details(str(field_to_value.get("auto_a_recibit")))
+        except Exception as e:
+            print(f"Warning: Could not fetch user_car_information card: {str(e)}")
     
     
     # Create CardData instance with proper typing
