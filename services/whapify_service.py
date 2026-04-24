@@ -264,7 +264,13 @@ async def send_delivery_notification(card_id: str, customer_name: str, car_info:
         dict: Response from send_whatsapp_message
     """
     # Hardcoded template in Spanish
-    message = f"Estimado {customer_name}, hace unos dias realizamos un diagnotico del vehiculo {car_info} queremos saber si tiene alguna duda de la cotizacion o si desea agendar una cita para el servicio. ¡Gracias por confiar en Toyopana!"
+    message = f"""Hola 👋🏼 {customer_name} , ¿cómo estás?
+
+        Te escribimos porque tienes una cotización pendiente con nosotros 🚗🔧
+
+        En este momento puedes aprovechar el beneficio de pagar con tarjeta BAC o St. George Bank hasta un plazo de 12 meses sin intereses 💳
+
+        Si deseas retomar el trabajo o agendar tu cita, estamos disponibles para ayudarte!!!"""
 
     logger.info(f"Preparing delivery notification for {customer_name} - {car_info}")
     

@@ -195,3 +195,23 @@ class PipefyEventsRepository:
             response.raise_for_status()
 
             return response.json()
+
+
+    async def get_events_actions_table():
+        """
+        Get all events with their actions_taken data for analysis
+
+        Returns:
+            List of event records with actions_taken field included 
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/card_actions",
+                params={
+                    "select": "id, organization_id, pipefy_card_id, action_type, status",
+                    "order": "created_at.desc"
+                },
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()

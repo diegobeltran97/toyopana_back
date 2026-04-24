@@ -77,7 +77,8 @@ async def sync_phase_cards(request: SyncCardsRequest):
     try:
         # Initialize repository
         pipefy_repo = PipeFyDataRepository(settings.PIPEFY_API_TOKEN)
-
+        
+        
         # Step 1: Fetch cards from Pipefy with pagination
         logger.info(f"Fetching cards from phase {request.phase_id} (cursor: {request.cursor}, limit: {request.limit})")
 
@@ -108,6 +109,10 @@ async def sync_phase_cards(request: SyncCardsRequest):
             )
 
         logger.info(f"Fetched {len(cards)} cards from Pipefy")
+        
+        
+        #Step 2 filter the card id that have the same card id in the events table to avoid duplicates
+        events_repo = PipefyEventsRepository()
 
         # Step 2: Process each card using the same method as webhook
         card_ids: List[str] = []
