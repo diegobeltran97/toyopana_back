@@ -204,7 +204,7 @@ async def get_whatsapp_labels(filter_today: bool = False):
     summary="Get WhatsApp Label Statistics",
     tags=["whatsapp"]
 )
-async def get_whatsapp_label_stats(filter_today: bool = False):
+async def get_whatsapp_label_stats(filter_today: bool = True):
     """
     Retrieve statistics for all WhatsApp labels (count of chats and messages per label).
 

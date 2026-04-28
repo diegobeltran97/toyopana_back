@@ -89,3 +89,25 @@ class CardActionsRepository:
                     actions_by_card[card_id].append(action)
 
             return actions_by_card
+
+    async def get_all_card_ids(self) -> set:
+        """
+        Get all unique pipefy_card_id values from card_actions table
+
+        Returns:
+            Set of all card IDs that have actions recorded
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/card_actions",
+                params={
+                    "select": "pipefy_card_id"
+                },
+                headers=self.headers
+            )
+            response.raise_for_status()
+            actions = response.json()
+
+            # Extract unique card IDs
+            card_ids = {action["pipefy_card_id"] for action in actions if action.get("pipefy_card_id")}
+            return card_ids
