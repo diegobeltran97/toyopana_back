@@ -118,3 +118,4 @@ class CardData(BaseModel):
     updated_at: Optional[str] = None
     due_date: Optional[str] = None
     url: Optional[str] = None
+    attachment_urls: Optional[List[str]] = None

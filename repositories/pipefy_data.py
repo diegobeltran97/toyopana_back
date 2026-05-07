@@ -56,13 +56,13 @@ class PipeFyDataRepository:
 
     async def get_card_details(self, card_id: str) -> Dict[str, Any]:
         """
-        Get detailed information about a card by ID
+        Get detailed information about a card by ID, including file attachments
 
         Args:
             card_id: The Pipefy card ID
 
         Returns:
-            Dictionary containing card details
+            Dictionary containing card details including attachments with preview URLs
         """
         query = """
         query GetCard($cardId: ID!) {
@@ -99,10 +99,14 @@ class PipeFyDataRepository:
                     name
                     color
                 }
+                attachments { 
+                  url
+                }
                 created_at
                 updated_at
                 due_date
                 url
+                
             }
         }
         """

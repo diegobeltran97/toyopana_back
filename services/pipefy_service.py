@@ -13,7 +13,108 @@ from schemas.webhook import (
     FieldData
 )
 from core.config import settings
-from typing import Dict, Any
+from typing import Dict, Any, List
+import json
+import asyncio
+from services.attachment_service import fetch_and_store_attachment
+
+
+def extract_filename_from_pipefy_path(array_value_path: str) -> str:
+    """
+    Extract filename from Pipefy array_value path.
+
+    Example:
+        "uploads/7cc1af41-3543-466f-84be-79938f32678d/17743027044494676179247497297760.jpg"
+        -> "17743027044494676179247497297760.jpg"
+
+    Args:
+        array_value_path: Path string from Pipefy array_value field
+
+    Returns:
+        Extracted filename
+    """
+    return array_value_path.split("/")[-1]
+
+
+def extract_attachment_urls(fields: List[dict]) -> tuple[List[str], List[str]]:
+    """
+    Extract Pipefy attachment URLs from the 'archivo_adjunto' field.
+
+    Returns tuple of (pipefy_urls, filenames) extracted from the field.
+    Pipefy URLs come from the 'value' field (JSON array string).
+    Filenames come from the 'array_value' field (list of paths).
+
+    Args:
+        fields: List of field dictionaries from card data
+
+    Returns:
+        Tuple of (list of Pipefy URLs, list of filenames)
+    """
+    for field in fields:
+        # Check if this is the archivo_adjunto field
+        if field.get("field", {}).get("id") == "archivo_adjunto":
+            # Extract URLs from the 'value' field (JSON string)
+            value_str = field.get("value")
+            pipefy_urls = []
+            if value_str:
+                try:
+                    pipefy_urls = json.loads(value_str)
+                except (json.JSONDecodeError, TypeError):
+                    print(f"Warning: Could not parse attachment URLs from value: {value_str}")
+                    pipefy_urls = []
+
+            # Extract filenames from array_value paths
+            array_value_paths = field.get("array_value", [])
+            filenames = [extract_filename_from_pipefy_path(path) for path in array_value_paths]
+
+            return pipefy_urls, filenames
+
+    # No archivo_adjunto field found
+    return [], []
+
+
+async def process_card_attachments(card_id: str, pipefy_urls: List[str], filenames: List[str]) -> List[str]:
+    """
+    Download attachments from Pipefy and store in Supabase.
+
+    Args:
+        card_id: Pipefy card ID
+        pipefy_urls: List of Pipefy attachment URLs (from value field)
+        filenames: List of filenames corresponding to each URL
+
+    Returns:
+        List of Supabase storage URLs (public URLs)
+    """
+    if not pipefy_urls:
+        return []
+
+    async def download_single_attachment(url: str, filename: str) -> str | None:
+        """Download a single attachment and return storage URL."""
+        try:
+            result = await fetch_and_store_attachment(
+                card_id=card_id,
+                pipefy_url=url,
+                filename=filename
+            )
+            storage_url = result.get("storage_url")
+            print(f"Successfully stored attachment: {filename} -> {storage_url}")
+            return storage_url
+        except Exception as e:
+            print(f"Error storing attachment {filename}: {str(e)}")
+            return None
+
+    # Process all attachments in parallel
+    tasks = [
+        download_single_attachment(url, filename)
+        for url, filename in zip(pipefy_urls, filenames)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Filter out None values and exceptions
+    storage_urls = [url for url in results if url and isinstance(url, str)]
+
+    print(f"Processed {len(storage_urls)} out of {len(pipefy_urls)} attachments for card {card_id}")
+    return storage_urls
 
 
 async def update_event_actions(
@@ -109,6 +210,13 @@ async def process_card_details(card_id: str):
 
     print("Field to Value Mapping:", field_to_value)  # Debugging output
 
+    # Extract and process attachments
+    pipefy_urls, filenames = extract_attachment_urls(card_data.get("fields", []))
+    attachment_urls = []
+    if pipefy_urls:
+        print(f"Found {len(pipefy_urls)} attachments for card {card_id}")
+        attachment_urls = await process_card_attachments(card_id, pipefy_urls, filenames)
+
     # Fetch nested cards with error handling
     user_data = None
     user_car_information = None
@@ -125,8 +233,8 @@ async def process_card_details(card_id: str):
             user_car_information = await pipefy_repo.get_card_details(str(field_to_value.get("auto_a_recibit")))
         except Exception as e:
             print(f"Warning: Could not fetch user_car_information card: {str(e)}")
-    
-    
+
+
     # Create CardData instance with proper typing
     card_to_save: CardData = CardData(
         id=card_data.get("id"),
@@ -141,7 +249,8 @@ async def process_card_details(card_id: str):
         created_at=card_data.get("created_at"),
         updated_at=card_data.get("updated_at"),
         due_date=card_data.get("due_date"),
-        url=card_data.get("url")
+        url=card_data.get("url"),
+        attachment_urls=attachment_urls
     )
 
 
@@ -180,6 +289,13 @@ async def process_card_details_backup(card_id: str):
 
     print("Field to Value Mapping (backup):", field_to_value)  # Debugging output
 
+    # Extract and process attachments
+    pipefy_urls, filenames = extract_attachment_urls(card_data.get("fields", []))
+    attachment_urls = []
+    if pipefy_urls:
+        print(f"Found {len(pipefy_urls)} attachments for backup card {card_id}")
+        attachment_urls = await process_card_attachments(card_id, pipefy_urls, filenames)
+
     # Fetch nested cards with error handling
     user_data = None
     user_car_information = None
@@ -212,7 +328,8 @@ async def process_card_details_backup(card_id: str):
         created_at=card_data.get("created_at"),
         updated_at=card_data.get("updated_at"),
         due_date=card_data.get("due_date"),
-        url=card_data.get("url")
+        url=card_data.get("url"),
+        attachment_urls=attachment_urls
     )
 
     # Use backup repository instead of regular events repository
