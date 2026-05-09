@@ -16,15 +16,21 @@ class AttachmentRepository:
         }
 
     async def get_by_storage_path(self, storage_path: str) -> Optional[dict]:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/pipefy_attachments",
-                headers=self.headers,
-                params={"storage_path": f"eq.{storage_path}", "limit": "1"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data[0] if data else None
+        print(f"Querying for existing attachment with storage_path={storage_path}")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.base_url}/pipefy_attachments",
+                    headers=self.headers,
+                    params={"storage_path": f"eq.{storage_path}", "limit": "1"},
+                )
+                response.raise_for_status()
+                data = response.json()
+                print(f"Queried for storage_path={storage_path}, found {len(data)} records")
+                return data[0] if data else None
+        except httpx.HTTPError as e:
+            print(f"Error querying for storage_path={storage_path}: {str(e)}")
+            return None
 
     async def get_by_card_id(self, pipefy_card_id: str) -> list[dict]:
         async with httpx.AsyncClient() as client:
