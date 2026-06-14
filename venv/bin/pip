@@ -1,4 +1,4 @@
-#!/Users/diegosastoque/Desktop/Projects/toyopana/toyoPana2025/app/app/venv/bin/python3
+#!/Users/diegosastoque/Desktop/Projects/toyopana/toyoPana2025/app/venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

@@ -3,7 +3,6 @@ from datetime import datetime
 from schemas.organization import OrganizationResponse
 from core.supabase_client import SupabaseDB
 from repositories.organization_repository import OrganizationRepository
-from postgrest import APIResponse
 
 router = APIRouter()
 
