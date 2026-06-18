@@ -1,4 +1,5 @@
 import logging
+from typing import Any, Dict, List, Optional
 
 from repositories.orders import (
     CustomerRepository,
@@ -8,6 +9,7 @@ from repositories.orders import (
 from schemas.customer import CustomerCreate, CustomerOut
 from schemas.vehicle import VehicleCreate, VehicleOut
 from schemas.order import OrderCreate, OrderOut
+from services import order_files_service
 
 logger = logging.getLogger(__name__)
 
@@ -103,3 +105,54 @@ async def create_order(data: OrderCreate) -> OrderOut:
     created = await repo.create_order(data.model_dump(mode="json"))
     logger.info("Order created in org %s", data.organization_id)
     return OrderOut.model_validate(created)
+
+
+async def get_full_order_details(
+    organization_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    sign_urls: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Return all orders with their customer, vehicle and files nested.
+
+    Each order is a dict with embedded "customer", "vehicle" and an
+    "order_files" array. Because the bucket is private, every file gets a
+    short-lived `signed_url` (unless `sign_urls` is False) so the frontend
+    can render it directly.
+
+    Args:
+        organization_id: Optional org filter
+        status: Optional status filter
+        limit: Max number of orders to return
+        offset: Pagination offset
+        sign_urls: Whether to attach signed URLs to embedded files
+
+    Returns:
+        A list of nested order dicts.
+    """
+    repo = OrderRepository()
+    orders = await repo.list_full_details(
+        organization_id=organization_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+
+    if sign_urls:
+        # Collect every file path across all orders and sign them in one
+        # concurrent batch, then map the signed URLs back onto each file.
+        paths = [
+            file["file_url"]
+            for order in orders
+            for file in (order.get("order_files") or [])
+            if file.get("file_url")
+        ]
+        signed = await order_files_service.sign_paths(paths)
+        for order in orders:
+            for file in order.get("order_files") or []:
+                file["signed_url"] = signed.get(file.get("file_url"))
+
+    logger.info("Returned full details for %d order(s)", len(orders))
+    return orders

@@ -31,8 +31,9 @@ class CustomerRepository:
         """
         Search customers within an organization
 
-        Filters by organization_id and applies a case-insensitive partial
-        match (ilike) for each of name/phone/national_id that is provided.
+        Filters by organization_id and matches a case-insensitive partial
+        (ilike) on ANY of the provided fields (name / phone / national_id),
+        so a single search term can hit any of them.
 
         Args:
             organization_id: The organization UUID
@@ -46,12 +47,18 @@ class CustomerRepository:
         params: Dict[str, Any] = {
             "organization_id": f"eq.{organization_id}"
         }
+
+        # Top-level PostgREST filters are AND-ed, so combine the provided
+        # field matches under an `or=(...)` group to get OR semantics.
+        or_filters: List[str] = []
         if name:
-            params["name"] = f"ilike.*{name}*"
+            or_filters.append(f"name.ilike.*{name}*")
         if phone:
-            params["phone"] = f"ilike.*{phone}*"
+            or_filters.append(f"phone.ilike.*{phone}*")
         if national_id:
-            params["national_id"] = f"ilike.*{national_id}*"
+            or_filters.append(f"national_id.ilike.*{national_id}*")
+        if or_filters:
+            params["or"] = "(" + ",".join(or_filters) + ")"
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -112,8 +119,9 @@ class VehicleRepository:
         """
         Search vehicles within an organization
 
-        Filters by organization_id and applies a case-insensitive partial
-        match (ilike) for each of plate/make/model that is provided.
+        Filters by organization_id and matches a case-insensitive partial
+        (ilike) on ANY of the provided fields (plate / make / model), so a
+        single search term can hit any of them.
 
         Args:
             organization_id: The organization UUID
@@ -127,12 +135,18 @@ class VehicleRepository:
         params: Dict[str, Any] = {
             "organization_id": f"eq.{organization_id}"
         }
+
+        # Top-level PostgREST filters are AND-ed, so combine the provided
+        # field matches under an `or=(...)` group to get OR semantics.
+        or_filters: List[str] = []
         if plate:
-            params["plate"] = f"ilike.*{plate}*"
+            or_filters.append(f"plate.ilike.*{plate}*")
         if make:
-            params["make"] = f"ilike.*{make}*"
+            or_filters.append(f"make.ilike.*{make}*")
         if model:
-            params["model"] = f"ilike.*{model}*"
+            or_filters.append(f"model.ilike.*{model}*")
+        if or_filters:
+            params["or"] = "(" + ",".join(or_filters) + ")"
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -234,3 +248,59 @@ class OrderRepository:
                 logger.error("Error creating order: %s", detail)
                 raise HTTPException(status_code=response.status_code, detail=detail)
             return response.json()[0]  # Return the created record
+
+    async def list_full_details(
+        self,
+        organization_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List orders with their customer, vehicle and files embedded.
+
+        Uses PostgREST resource embedding to return nested JSON in a single
+        round trip (no flat cartesian join, no duplicated order rows). The
+        embeds are LEFT joins, so EVERY order is returned:
+            - "customer": related customers row, or null
+            - "vehicle":  related vehicles row, or null
+            - "order_files": list of the order's files ([] when none)
+
+        Args:
+            organization_id: Optional org filter
+            status: Optional status filter
+            limit: Max number of orders to return (applies to orders, not rows)
+            offset: Pagination offset
+
+        Returns:
+            A list of order dicts with embedded relations.
+        """
+        params: Dict[str, Any] = {
+            "select": (
+                "*,"
+                "customer:customers(*),"
+                "vehicle:vehicles(*),"
+                "order_files(*)"
+            ),
+            "order": "date_order.desc",
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        if organization_id:
+            params["organization_id"] = f"eq.{organization_id}"
+        if status:
+            params["status"] = f"eq.{status}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/orders",
+                params=params,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error listing full order details: %s", detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            return response.json()

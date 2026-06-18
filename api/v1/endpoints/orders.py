@@ -1,11 +1,12 @@
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query
 
+
 from schemas.customer import CustomerSearch, CustomerCreate, CustomerOut
 from schemas.vehicle import VehicleSearch, VehicleCreate, VehicleOut
-from schemas.order import OrderCreate, OrderOut
-from services import orders_service
+from schemas.order import OrderCreate, OrderFullCreate, OrderOut
+from services import orders_service, order_files_service
 from repositories.orders import CustomerRepository, VehicleRepository
 
 router = APIRouter()
@@ -92,4 +93,65 @@ async def create_vehicle(body: VehicleCreate):
 )
 async def create_order(body: OrderCreate):
     """Create an order and return it (id is the order identifier)."""
+    
+    
     return await orders_service.create_order(body)
+
+
+@router.get(
+    "/fullOrderDetails",
+    response_model=List[Dict[str, Any]],
+    summary="List all orders with customer, vehicle and files",
+    tags=["orders"],
+)
+async def full_order_details(
+    organization_id: Optional[str] = Query(
+        None, description="Filter by organization"
+    ),
+    status: Optional[str] = Query(
+        None, description="Filter by order status (recibido/proceso/listo/entregado)"
+    ),
+    limit: int = Query(100, ge=1, le=200, description="Max orders to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    sign_urls: bool = Query(
+        True, description="Attach short-lived signed URLs to each file"
+    ),
+):
+    """
+    Return all orders, each with its `customer`, `vehicle` and `order_files[]`
+    nested. Orders without files are still included (files = []). Private files
+    come with a fresh `signed_url` per file unless `sign_urls=false`.
+    """
+    return await orders_service.get_full_order_details(
+        organization_id=organization_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+        sign_urls=sign_urls,
+    )
+
+
+@router.post("/fullOrder",
+             response_model=OrderOut,
+             summary="Create an order with files",
+             tags=["orders"]
+             )
+async def create_full_order(body: OrderFullCreate) -> OrderOut:
+    """Create an order and return it with his files """
+    
+
+
+    
+    # Define the properties to remove
+    to_remove = ["files", "uploaded_by", "label"]
+    
+    for prop in to_remove:
+        delattr(body, prop)
+    
+    order = await orders_service.create_order(body)
+    
+   
+    return order   
+    
+    
+    

@@ -1,8 +1,14 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import List, Literal, Optional
+from fastapi import File, Form, Path, UploadFile
 from pydantic import BaseModel, ConfigDict
+
+from schemas.customer import CustomerCreate
+from schemas.vehicle import VehicleCreate
+
+
 
 
 class OrderCreate(BaseModel):
@@ -18,6 +24,14 @@ class OrderCreate(BaseModel):
     status: str = "recibido"
 
 
+class OrderFullCreate(OrderCreate):
+    customer_id: Optional[uuid.UUID]
+    vehicle_id: Optional[uuid.UUID]
+    customerData: CustomerCreate
+    vehicleData: VehicleCreate
+    
+    
+ 
 class OrderOut(OrderCreate):
     id: uuid.UUID
     total_amount: Decimal
