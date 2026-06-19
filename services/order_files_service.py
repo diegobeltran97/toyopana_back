@@ -86,6 +86,16 @@ async def _upload_bytes(path: str, content: bytes, content_type: str) -> None:
     await asyncio.to_thread(_do_upload)
 
 
+async def remove_paths(paths: List[str]) -> None:
+    """Public best-effort removal of objects from Storage.
+
+    Used by callers outside this module (e.g. deleting an order, whose
+    file rows are cascade-deleted in the DB but whose Storage objects are
+    not) to clean the bucket.
+    """
+    await _remove_paths(paths)
+
+
 async def _remove_paths(paths: List[str]) -> None:
     """Best-effort removal of objects from Storage (used for cleanup)."""
     if not paths:

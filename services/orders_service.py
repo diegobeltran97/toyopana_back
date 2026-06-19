@@ -1,14 +1,17 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
+
 from repositories.orders import (
     CustomerRepository,
     VehicleRepository,
     OrderRepository,
 )
+from repositories.order_files import OrderFileRepository
 from schemas.customer import CustomerCreate, CustomerOut
 from schemas.vehicle import VehicleCreate, VehicleOut
-from schemas.order import OrderCreate, OrderOut
+from schemas.order import OrderCreate, OrderOut, OrderUpdate, OrderFullUpdate
 from services import order_files_service
 
 logger = logging.getLogger(__name__)
@@ -156,3 +159,107 @@ async def get_full_order_details(
 
     logger.info("Returned full details for %d order(s)", len(orders))
     return orders
+
+
+async def get_full_order_detail_by_id(
+    order_id: str,
+    sign_urls: bool = True,
+) -> Dict[str, Any]:
+    repo = OrderRepository()
+    order = await repo.get_full_detail_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if sign_urls:
+        paths = [
+            file["file_url"]
+            for file in (order.get("order_files") or [])
+            if file.get("file_url")
+        ]
+        signed = await order_files_service.sign_paths(paths)
+        for file in order.get("order_files") or []:
+            file["signed_url"] = signed.get(file.get("file_url"))
+
+    return order
+
+
+async def update_full_order_detail(
+    order_id: str,
+    data: OrderFullUpdate,
+) -> Dict[str, Any]:
+    if data.order:
+        payload = data.order.model_dump(mode="json", exclude_unset=True)
+        if payload:
+            repo = OrderRepository()
+            updated = await repo.update_order(order_id, payload)
+            if not updated:
+                raise HTTPException(status_code=404, detail="Order not found")
+
+    if data.customer:
+        # Resolve customer_id from the order to know which row to patch
+        order_repo = OrderRepository()
+        order_row = await order_repo.get_full_detail_by_id(order_id)
+        if not order_row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        customer_id = (order_row.get("customer") or {}).get("id")
+        if customer_id:
+            customer_repo = CustomerRepository()
+            await customer_repo.update_customer(str(customer_id), data.customer)
+
+    if data.vehicle:
+        order_repo = OrderRepository()
+        order_row = await order_repo.get_full_detail_by_id(order_id)
+        if not order_row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        vehicle_id = (order_row.get("vehicle") or {}).get("id")
+        if vehicle_id:
+            vehicle_repo = VehicleRepository()
+            await vehicle_repo.update_vehicle(str(vehicle_id), data.vehicle)
+
+    return await get_full_order_detail_by_id(order_id)
+
+
+async def update_order(order_id: str, data: OrderUpdate) -> OrderOut:
+    """
+    Apply a partial update to an order and return the updated record.
+
+    Only the fields explicitly sent are written (so omitted fields keep
+    their current value). Raises 404 if the order doesn't exist.
+    """
+    payload = data.model_dump(mode="json", exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    repo = OrderRepository()
+    updated = await repo.update_order(str(order_id), payload)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    logger.info("Order %s updated (%s)", order_id, ", ".join(payload.keys()))
+    return OrderOut.model_validate(updated)
+
+
+async def delete_order(order_id: str) -> None:
+    """
+    Delete an order and clean up its Storage files.
+
+    Child rows are removed by ON DELETE CASCADE; we additionally collect the
+    order's file paths beforehand and remove the matching Storage objects so
+    the private bucket doesn't accumulate orphans. Raises 404 if not found.
+    """
+    # 1. Grab file paths first — after the cascade delete the rows are gone.
+    file_repo = OrderFileRepository()
+    files = await file_repo.list_by_order(str(order_id))
+    paths = [f["file_url"] for f in files if f.get("file_url")]
+
+    # 2. Delete the order (cascades to order_files / items / field_values).
+    repo = OrderRepository()
+    deleted = await repo.delete_order(str(order_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # 3. Best-effort Storage cleanup for the files we just orphaned.
+    if paths:
+        await order_files_service.remove_paths(paths)
+
+    logger.info("Order %s deleted (%d file(s) cleaned)", order_id, len(paths))

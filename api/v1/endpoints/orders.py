@@ -1,11 +1,11 @@
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Path, Query, status
 
 
 from schemas.customer import CustomerSearch, CustomerCreate, CustomerOut
 from schemas.vehicle import VehicleSearch, VehicleCreate, VehicleOut
-from schemas.order import OrderCreate, OrderFullCreate, OrderOut
+from schemas.order import OrderCreate, OrderFullCreate, OrderOut, OrderUpdate, OrderFullUpdate
 from services import orders_service, order_files_service
 from repositories.orders import CustomerRepository, VehicleRepository
 
@@ -149,9 +149,62 @@ async def create_full_order(body: OrderFullCreate) -> OrderOut:
         delattr(body, prop)
     
     order = await orders_service.create_order(body)
-    
-   
-    return order   
+
+
+    return order
+
+
+@router.get(
+    "/fullOrderDetails/{order_id}",
+    response_model=Dict[str, Any],
+    summary="Get a single order with customer, vehicle and files",
+    tags=["orders"],
+)
+async def get_full_order_detail(
+    order_id: str = Path(..., description="The order id"),
+    sign_urls: bool = Query(True, description="Attach signed URLs to files"),
+):
+    return await orders_service.get_full_order_detail_by_id(order_id, sign_urls=sign_urls)
+
+
+@router.patch(
+    "/fullOrderDetails/{order_id}",
+    response_model=Dict[str, Any],
+    summary="Update order, customer, and/or vehicle fields",
+    tags=["orders"],
+)
+async def update_full_order_detail(
+    body: OrderFullUpdate,
+    order_id: str = Path(..., description="The order id"),
+):
+    return await orders_service.update_full_order_detail(order_id, body)
+
+
+@router.patch(
+    "/{order_id}",
+    response_model=OrderOut,
+    summary="Update an order",
+    tags=["orders"],
+)
+async def update_order(
+    body: OrderUpdate,
+    order_id: str = Path(..., description="The order id to update"),
+) -> OrderOut:
+    """Partially update an order (only the fields provided are changed)."""
+    return await orders_service.update_order(order_id, body)
+
+
+@router.delete(
+    "/{order_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an order",
+    tags=["orders"],
+)
+async def delete_order(
+    order_id: str = Path(..., description="The order id to delete"),
+):
+    """Delete an order and its files (DB rows cascade; Storage is cleaned up)."""
+    await orders_service.delete_order(order_id)
     
     
     

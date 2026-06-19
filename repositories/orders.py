@@ -69,6 +69,25 @@ class CustomerRepository:
             response.raise_for_status()
             return response.json()
 
+    async def update_customer(
+        self, customer_id: str, data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{self.base_url}/customers",
+                params={"id": f"eq.{customer_id}"},
+                json=data,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error updating customer %s: %s", customer_id, detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
+
     async def create_customer(
         self,
         organization_id: str,
@@ -186,6 +205,25 @@ class VehicleRepository:
             rows = response.json()
             return rows[0] if rows else None
 
+    async def update_vehicle(
+        self, vehicle_id: str, data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{self.base_url}/vehicles",
+                params={"id": f"eq.{vehicle_id}"},
+                json=data,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error updating vehicle %s: %s", vehicle_id, detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
+
     async def create_vehicle(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create a new vehicle record in Supabase
@@ -219,6 +257,29 @@ class OrderRepository:
             "Content-Type": "application/json",
             "Prefer": "return=representation"
         }
+
+    async def get_full_detail_by_id(
+        self, order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        params = {
+            "id": f"eq.{order_id}",
+            "select": "*,customer:customers(*),vehicle:vehicles(*),order_files(*)",
+            "limit": "1",
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/orders",
+                params=params,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error fetching full detail for order %s: %s", order_id, detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
 
     async def create_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -304,3 +365,61 @@ class OrderRepository:
                 logger.error("Error listing full order details: %s", detail)
                 raise HTTPException(status_code=response.status_code, detail=detail)
             return response.json()
+
+    async def update_order(
+        self, order_id: str, data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Patch an order's fields and return the updated record.
+
+        Args:
+            order_id: The order UUID to update
+            data: Partial fields to set (only the columns provided)
+
+        Returns:
+            The updated order record, or None if no order matched.
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{self.base_url}/orders",
+                params={"id": f"eq.{order_id}"},
+                json=data,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error updating order %s: %s", order_id, detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
+
+    async def delete_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Delete an order and return the deleted record.
+
+        Child rows (order_files, order_items, order_field_values) are removed
+        automatically by ON DELETE CASCADE. Storage objects are NOT, so the
+        caller is responsible for cleaning the bucket.
+
+        Args:
+            order_id: The order UUID to delete
+
+        Returns:
+            The deleted order record, or None if no order matched.
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                f"{self.base_url}/orders",
+                params={"id": f"eq.{order_id}"},
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error deleting order %s: %s", order_id, detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
