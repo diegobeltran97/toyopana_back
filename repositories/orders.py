@@ -350,7 +350,7 @@ class OrderRepository:
         if organization_id:
             params["organization_id"] = f"eq.{organization_id}"
         if status:
-            params["status"] = f"eq.{status}"
+            params["order_status"] = f"eq.{status}"
 
         async with httpx.AsyncClient() as client:
             response = await client.get(

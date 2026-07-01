@@ -9,18 +9,19 @@ from schemas.customer import CustomerCreate
 from schemas.vehicle import VehicleCreate
 
 
-# Allowed values mirror the DB check constraints (orders_status_check /
-# orders_priority_check). Keep them here so both create and update validate
-# against the same set and reject bad input with a 422 before hitting Postgres.
+# Allowed values mirror the order_statuses.code FK table.
+# Keep them here so both create and update validate before hitting Postgres.
 OrderStatus = Literal[
     "recibido",
     "en_proceso",
-    "pendiente",
+    "pendiente_aprobacion",
     "contactado",
     "aprobado",
-    "listo",
-    "entregado",
     "cancelado",
+    "pagado",
+    "requiere_de_contacto",
+    "agendado",
+    "finalizada",
 ]
 OrderPriority = Literal["alta", "media", "baja"]
 
@@ -35,7 +36,7 @@ class OrderCreate(BaseModel):
     service_type: str
     km_in: Optional[int] = None
     priority: OrderPriority = "media"
-    status: OrderStatus = "recibido"
+    order_status: OrderStatus = "recibido"
 
 
 class OrderFullCreate(OrderCreate):
@@ -57,7 +58,7 @@ class OrderUpdate(BaseModel):
     vehicle_id: Optional[uuid.UUID] = None
     assigned_to: Optional[uuid.UUID] = None  # técnico (app_users.id)
     service_type: Optional[str] = None
-    status: Optional[OrderStatus] = None
+    order_status: Optional[OrderStatus] = None
     priority: Optional[OrderPriority] = None
     order_reason: Optional[str] = None
     total_amount: Optional[Decimal] = None
