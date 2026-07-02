@@ -187,34 +187,51 @@ async def update_full_order_detail(
     order_id: str,
     data: OrderFullUpdate,
 ) -> Dict[str, Any]:
+    repo = OrderRepository()
+    current_order: Optional[Dict[str, Any]] = None
+
     if data.order:
         payload = data.order.model_dump(mode="json", exclude_unset=True)
         if payload:
-            repo = OrderRepository()
+            new_status = payload.get("order_status")
+            if new_status:
+                current_order = await repo.get_full_detail_by_id(order_id)
+                if not current_order:
+                    raise HTTPException(status_code=404, detail="Order not found")
+
             updated = await repo.update_order(order_id, payload)
             if not updated:
                 raise HTTPException(status_code=404, detail="Order not found")
 
-    if data.customer:
-        # Resolve customer_id from the order to know which row to patch
-        order_repo = OrderRepository()
-        order_row = await order_repo.get_full_detail_by_id(order_id)
-        if not order_row:
-            raise HTTPException(status_code=404, detail="Order not found")
-        customer_id = (order_row.get("customer") or {}).get("id")
-        if customer_id:
-            customer_repo = CustomerRepository()
-            await customer_repo.update_customer(str(customer_id), data.customer)
+            if new_status and current_order:
+                print("hey time to change your history:", current_order)
+                from_status = current_order.get("order_status")
+                if from_status != new_status:
+                    await repo.create_status_history({
+                        "order_id": str(order_id),
+                        "organization_id": str(current_order["organization_id"]),
+                        "status_type": "workshop",
+                        "from_status": from_status,
+                        "to_status": new_status,
+                    })
 
-    if data.vehicle:
-        order_repo = OrderRepository()
-        order_row = await order_repo.get_full_detail_by_id(order_id)
-        if not order_row:
-            raise HTTPException(status_code=404, detail="Order not found")
-        vehicle_id = (order_row.get("vehicle") or {}).get("id")
-        if vehicle_id:
-            vehicle_repo = VehicleRepository()
-            await vehicle_repo.update_vehicle(str(vehicle_id), data.vehicle)
+    if data.customer or data.vehicle:
+        if current_order is None:
+            current_order = await repo.get_full_detail_by_id(order_id)
+            if not current_order:
+                raise HTTPException(status_code=404, detail="Order not found")
+
+        if data.customer:
+            customer_id = (current_order.get("customer") or {}).get("id")
+            if customer_id:
+                customer_repo = CustomerRepository()
+                await customer_repo.update_customer(str(customer_id), data.customer)
+
+        if data.vehicle:
+            vehicle_id = (current_order.get("vehicle") or {}).get("id")
+            if vehicle_id:
+                vehicle_repo = VehicleRepository()
+                await vehicle_repo.update_vehicle(str(vehicle_id), data.vehicle)
 
     return await get_full_order_detail_by_id(order_id)
 
@@ -225,15 +242,35 @@ async def update_order(order_id: str, data: OrderUpdate) -> OrderOut:
 
     Only the fields explicitly sent are written (so omitted fields keep
     their current value). Raises 404 if the order doesn't exist.
+    When `status` is included, a row is inserted into order_status_history.
     """
     payload = data.model_dump(mode="json", exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     repo = OrderRepository()
+
+    new_status = payload.get("status")
+    current_order = None
+    if new_status:
+        current_order = await repo.get_full_detail_by_id(str(order_id))
+        if not current_order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
     updated = await repo.update_order(str(order_id), payload)
     if not updated:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if new_status and current_order:
+        from_status = current_order.get("order_status")
+        if from_status != new_status:
+            await repo.create_status_history({
+                "order_id": str(order_id),
+                "organization_id": str(current_order["organization_id"]),
+                "status_type": "workshop",
+                "from_status": from_status,
+                "to_status": new_status,
+            })
 
     logger.info("Order %s updated (%s)", order_id, ", ".join(payload.keys()))
     return OrderOut.model_validate(updated)

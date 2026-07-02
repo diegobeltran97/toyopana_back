@@ -395,6 +395,21 @@ class OrderRepository:
             rows = response.json()
             return rows[0] if rows else None
 
+    async def create_status_history(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/order_status_history",
+                json=data,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error("Error creating status history: %s", detail)
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            return response.json()[0]
+
     async def delete_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         """
         Delete an order and return the deleted record.
