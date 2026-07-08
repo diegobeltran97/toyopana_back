@@ -65,6 +65,7 @@ class OrderUpdate(BaseModel):
     received_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     km_in: Optional[int] = None
+    order_comments: Optional[str] = None
 
 
 class OrderOut(OrderCreate):
@@ -79,6 +80,7 @@ class OrderOut(OrderCreate):
     total_amount: Decimal
     date_order: datetime
     completed_at: Optional[datetime] = None
+    order_comments: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
