@@ -112,7 +112,7 @@ async def create_order(data: OrderCreate) -> OrderOut:
 
 async def get_full_order_details(
     organization_id: Optional[str] = None,
-    status: Optional[str] = None,
+    status: Optional[List[str]] = None,
     limit: int = 100,
     offset: int = 0,
     sign_urls: bool = True,
@@ -127,7 +127,7 @@ async def get_full_order_details(
 
     Args:
         organization_id: Optional org filter
-        status: Optional status filter
+        status: Optional list of statuses to filter by (matches any in the list)
         limit: Max number of orders to return
         offset: Pagination offset
         sign_urls: Whether to attach signed URLs to embedded files

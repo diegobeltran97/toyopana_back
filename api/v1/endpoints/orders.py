@@ -108,8 +108,13 @@ async def full_order_details(
     organization_id: Optional[str] = Query(
         None, description="Filter by organization"
     ),
-    status: Optional[str] = Query(
-        None, description="Filter by order status (recibido/proceso/listo/entregado)"
+    status: Optional[List[str]] = Query(
+        None,
+        description=(
+            "Filter by one or more order statuses "
+            "(recibido/proceso/listo/entregado). Repeat the param to pass "
+            "several: ?status=recibido&status=pagado"
+        ),
     ),
     limit: int = Query(100, ge=1, le=200, description="Max orders to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),

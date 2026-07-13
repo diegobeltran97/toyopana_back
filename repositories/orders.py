@@ -313,7 +313,7 @@ class OrderRepository:
     async def list_full_details(
         self,
         organization_id: Optional[str] = None,
-        status: Optional[str] = None,
+        status: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -329,7 +329,7 @@ class OrderRepository:
 
         Args:
             organization_id: Optional org filter
-            status: Optional status filter
+            status: Optional list of statuses to filter by (matches any in the list)
             limit: Max number of orders to return (applies to orders, not rows)
             offset: Pagination offset
 
@@ -350,7 +350,10 @@ class OrderRepository:
         if organization_id:
             params["organization_id"] = f"eq.{organization_id}"
         if status:
-            params["order_status"] = f"eq.{status}"
+            # PostgREST `in.(...)` matches any status in the list. Values are
+            # double-quoted so slugs with reserved characters stay intact.
+            quoted = ",".join(f'"{s}"' for s in status)
+            params["order_status"] = f"in.({quoted})"
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
