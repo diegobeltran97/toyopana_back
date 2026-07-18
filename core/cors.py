@@ -10,7 +10,8 @@ def add_cors(app):
         CORSMiddleware,
         allow_origins=[
             "https://toypana-frontend.vercel.app",  # Production frontend origin
-            "http://localhost:3000",                # Development
+            "http://localhost:3000", 
+            "http://localhost:3001", # Development
         ],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],

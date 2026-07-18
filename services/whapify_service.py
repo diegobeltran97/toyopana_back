@@ -6,6 +6,14 @@ from repositories.whapify_repository import WhapifyRepository
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DELIVERY_NOTIFICATION_TEMPLATE = """Hola {customer_name}, ¿cómo estás?
+
+Te escribimos porque tienes una cotización pendiente con nosotros para tu {car_info}.
+
+En este momento puedes aprovechar el beneficio de pagar con tarjeta BAC o St. George Bank hasta un plazo de 12 meses sin intereses.
+
+Si deseas retomar el trabajo o agendar tu cita, estamos disponibles para ayudarte."""
+
 # Initialize repository singleton
 _whapify_repo: WhapifyRepository | None = None
 
@@ -250,32 +258,46 @@ async def get_labels_stats(filter_today_chats: bool = False) -> Dict[str, Any]:
     }
 
 
-async def send_delivery_notification(card_id: str, customer_name: str, car_info: str, phone: str) -> dict:
+async def send_delivery_notification(
+    card_id: str,
+    customer_name: str,
+    car_info: str,
+    phone: str,
+    message: str | None = None,
+) -> dict:
     """
-    Send a hardcoded delivery notification template via WhatsApp.
+    Send a delivery notification via WhatsApp.
 
     Args:
         card_id: The Pipefy card ID
         customer_name: Customer's name
         car_info: Car details (e.g., "Toyota Camry 2020")
         phone: Customer's phone number
+        message: Optional custom message. Falls back to the default template.
 
     Returns:
         dict: Response from send_whatsapp_message
     """
-    # Hardcoded template in Spanish
-    message = f"""Hola 👋🏼 {customer_name} , ¿cómo estás?
+    outbound_message = (
+        message
+        or DEFAULT_DELIVERY_NOTIFICATION_TEMPLATE.format(
+            customer_name=customer_name,
+            car_info=car_info,
+        )
+    ).strip()
 
-        Te escribimos porque tienes una cotización pendiente con nosotros 🚗🔧
-
-        En este momento puedes aprovechar el beneficio de pagar con tarjeta BAC o St. George Bank hasta un plazo de 12 meses sin intereses 💳
-
-        Si deseas retomar el trabajo o agendar tu cita, estamos disponibles para ayudarte!!!"""
+    if not outbound_message:
+        return {
+            "success": False,
+            "error": "bad_request",
+            "details": "Message cannot be empty",
+            "status_code": 400,
+        }
 
     logger.info(f"Preparing delivery notification for {customer_name} - {car_info}")
     
     try:
-        result = await send_whatsapp_message(phone=phone, message=message)
+        result = await send_whatsapp_message(phone=phone, message=outbound_message)
         
         await update_event_actions(event_id=card_id, actions_taken={"whatsapp_sent": True})
         

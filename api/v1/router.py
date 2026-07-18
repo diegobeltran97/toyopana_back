@@ -6,6 +6,7 @@ from api.v1.endpoints import users
 from api.v1.endpoints import organization
 from api.v1.endpoints import webhook
 from api.v1.endpoints import whatsapp
+from api.v1.endpoints import messaging
 from api.v1.endpoints import pipefy
 from api.v1.endpoints import attachments
 from api.v1.endpoints import orders
@@ -20,6 +21,7 @@ router.include_router(organization.router, prefix="/api", tags=["organization"])
 router.include_router(webhook.router, prefix="/api", tags=["webhook"])
 router.include_router(reports.router, prefix="/api", tags=["reports"])
 router.include_router(whatsapp.router, prefix="/api", tags=["whatsapp"])
+router.include_router(messaging.router, prefix="/api/messaging", tags=["messaging"])
 router.include_router(pipefy.router, prefix="/api/pipefy", tags=["pipefy"])
 router.include_router(attachments.router, prefix="/api/attachments", tags=["attachments"])
 router.include_router(orders.router, prefix="/api/orders", tags=["orders"])

@@ -18,6 +18,7 @@ class SendWhatsAppRequest(BaseModel):
     customer_name: str
     car_info: str
     phone: str
+    message: str | None = None
 
 
 @router.post(
@@ -46,7 +47,8 @@ async def send_whatsapp_notification(request: SendWhatsAppRequest):
         "card_id": "123456",
         "customer_name": "Diego",
         "car_info": "Toyota Camry 2020",
-        "phone": "5512345678"
+        "phone": "5512345678",
+        "message": "Hola Diego, tu cotización sigue disponible."
     }
     ```
     """
@@ -58,7 +60,8 @@ async def send_whatsapp_notification(request: SendWhatsAppRequest):
             card_id=request.card_id,
             customer_name=request.customer_name,
             car_info=request.car_info,
-            phone=request.phone
+            phone=request.phone,
+            message=request.message,
         )
 
         # Check if the message was sent successfully
@@ -83,6 +86,7 @@ async def send_whatsapp_notification(request: SendWhatsAppRequest):
                 "auth_failed": "WhatsApp API authentication failed. Please check configuration.",
                 "rate_limit": "WhatsApp API rate limit exceeded. Please try again later.",
                 "timeout": "WhatsApp API request timed out. Please try again.",
+                "bad_request": "WhatsApp message cannot be empty.",
                 "api_error": f"WhatsApp API error (status {status_code})",
                 "unexpected": f"Unexpected error: {result.get('details')}"
             }
