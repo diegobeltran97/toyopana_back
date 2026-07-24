@@ -12,6 +12,7 @@ from api.v1.endpoints import attachments
 from api.v1.endpoints import orders
 from api.v1.endpoints import order_files
 from api.v1.endpoints import order_statuses
+from api.v1.endpoints import dashboard
 
 router = APIRouter()
 router.include_router(health.router, prefix="/api", tags=["health"])
@@ -27,3 +28,4 @@ router.include_router(attachments.router, prefix="/api/attachments", tags=["atta
 router.include_router(orders.router, prefix="/api/orders", tags=["orders"])
 router.include_router(order_files.router, prefix="/api/orders", tags=["orders"])
 router.include_router(order_statuses.router, prefix="/api/order-statuses", tags=["order-statuses"])
+router.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
