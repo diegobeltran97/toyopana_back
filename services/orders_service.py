@@ -9,8 +9,8 @@ from repositories.orders import (
     OrderRepository,
 )
 from repositories.order_files import OrderFileRepository
-from schemas.customer import CustomerCreate, CustomerOut
-from schemas.vehicle import VehicleCreate, VehicleOut
+from schemas.customer import CustomerCreate, CustomerOut, CustomerUpdate
+from schemas.vehicle import VehicleCreate, VehicleOut, VehicleUpdate
 from schemas.order import OrderCreate, OrderOut, OrderUpdate, OrderFullUpdate
 from services import order_files_service
 
@@ -55,6 +55,29 @@ async def find_or_create_customer(
     return CustomerOut.model_validate(created)
 
 
+async def update_customer(
+    customer_id: str,
+    data: CustomerUpdate,
+) -> CustomerOut:
+    """Apply a partial update to a customer and return the updated record.
+
+    Only the fields explicitly sent are written (omitted fields keep their
+    current value). Raises 404 if the customer doesn't exist, 400 if the
+    payload is empty.
+    """
+    payload = data.model_dump(mode="json", exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    repo = CustomerRepository()
+    updated = await repo.update_customer(customer_id, payload)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    logger.info("Customer %s updated (%s)", customer_id, ", ".join(payload.keys()))
+    return CustomerOut.model_validate(updated)
+
+
 async def find_or_create_vehicle(
     organization_id: str,
     data: VehicleCreate,
@@ -89,6 +112,28 @@ async def find_or_create_vehicle(
     created = await repo.create_vehicle(data.model_dump(mode="json"))
     logger.info("Vehicle created with plate %s in org %s", data.plate, organization_id)
     return VehicleOut.model_validate(created)
+
+
+async def update_vehicle(
+    vehicle_id: str,
+    data: VehicleUpdate,
+) -> VehicleOut:
+    """Apply a partial update to a vehicle and return the updated record.
+
+    Only the fields explicitly sent are written. Raises 404 if the vehicle
+    doesn't exist, 400 if the payload is empty.
+    """
+    payload = data.model_dump(mode="json", exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    repo = VehicleRepository()
+    updated = await repo.update_vehicle(vehicle_id, payload)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    logger.info("Vehicle %s updated (%s)", vehicle_id, ", ".join(payload.keys()))
+    return VehicleOut.model_validate(updated)
 
 
 async def create_order(data: OrderCreate) -> OrderOut:

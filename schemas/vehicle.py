@@ -20,6 +20,16 @@ class VehicleCreate(BaseModel):
     km_last_service: Optional[int] = None
 
 
+class VehicleUpdate(BaseModel):
+    """Partial update of a vehicle. Only the fields sent are applied."""
+
+    plate: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    km_last_service: Optional[int] = None
+
+
 class VehicleOut(BaseModel):
     id: uuid.UUID
     organization_id: uuid.UUID

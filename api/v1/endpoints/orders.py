@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Path, Query, status
 
 
-from schemas.customer import CustomerSearch, CustomerCreate, CustomerOut
-from schemas.vehicle import VehicleSearch, VehicleCreate, VehicleOut
+from schemas.customer import CustomerSearch, CustomerCreate, CustomerOut, CustomerUpdate
+from schemas.vehicle import VehicleSearch, VehicleCreate, VehicleOut, VehicleUpdate
 from schemas.order import OrderCreate, OrderFullCreate, OrderOut, OrderUpdate, OrderFullUpdate
 from schemas.field_definition import OrderFieldValueOut, OrderFieldValueUpsert
 from services import orders_service, order_files_service, field_definitions_service
@@ -51,6 +51,20 @@ async def create_customer(
     return await orders_service.find_or_create_customer(organization_id, body)
 
 
+@router.patch(
+    "/customers/{customer_id}",
+    response_model=CustomerOut,
+    summary="Update a customer",
+    tags=["orders"],
+)
+async def update_customer(
+    body: CustomerUpdate,
+    customer_id: str = Path(..., description="The customer id to update"),
+):
+    """Partially update a customer (only the fields provided are changed)."""
+    return await orders_service.update_customer(customer_id, body)
+
+
 @router.post(
     "/vehicles/search",
     response_model=List[VehicleOut],
@@ -84,6 +98,20 @@ async def search_vehicles(
 async def create_vehicle(body: VehicleCreate):
     """Return an existing vehicle (matched by plate) or create a new one."""
     return await orders_service.find_or_create_vehicle(str(body.organization_id), body)
+
+
+@router.patch(
+    "/vehicles/{vehicle_id}",
+    response_model=VehicleOut,
+    summary="Update a vehicle",
+    tags=["orders"],
+)
+async def update_vehicle(
+    body: VehicleUpdate,
+    vehicle_id: str = Path(..., description="The vehicle id to update"),
+):
+    """Partially update a vehicle (only the fields provided are changed)."""
+    return await orders_service.update_vehicle(vehicle_id, body)
 
 
 @router.post(
