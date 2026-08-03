@@ -266,6 +266,8 @@ class OrderRepository:
             "select": (
                 "*,customer:customers(*),vehicle:vehicles(*),order_files(*),"
                 "order_field_values(*,field_definition:field_definitions(*))"
+                "created_by_user:app_users!orders_created_by_fkey(id,name,role),"
+                "assigned_user:app_users!orders_assigned_to_fkey(id,name,role)"
             ),
             "limit": "1",
         }
