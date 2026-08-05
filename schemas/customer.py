@@ -17,6 +17,14 @@ class CustomerCreate(BaseModel):
     national_id: Optional[str] = None
 
 
+class CustomerUpdate(BaseModel):
+    """Partial update of a customer. Only the fields sent are applied."""
+
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    national_id: Optional[str] = None
+
+
 class CustomerOut(BaseModel):
     id: uuid.UUID
     name: str
