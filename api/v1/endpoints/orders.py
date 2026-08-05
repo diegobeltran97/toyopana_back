@@ -6,7 +6,8 @@ from fastapi import APIRouter, Path, Query, status
 from schemas.customer import CustomerSearch, CustomerCreate, CustomerOut
 from schemas.vehicle import VehicleSearch, VehicleCreate, VehicleOut
 from schemas.order import OrderCreate, OrderFullCreate, OrderOut, OrderUpdate, OrderFullUpdate
-from services import orders_service, order_files_service
+from schemas.field_definition import OrderFieldValueOut, OrderFieldValueUpsert
+from services import orders_service, order_files_service, field_definitions_service
 from repositories.orders import CustomerRepository, VehicleRepository
 
 router = APIRouter()
@@ -210,6 +211,21 @@ async def delete_order(
 ):
     """Delete an order and its files (DB rows cascade; Storage is cleaned up)."""
     await orders_service.delete_order(order_id)
+
+
+@router.put(
+    "/{order_id}/field-values",
+    response_model=List[OrderFieldValueOut],
+    summary="Replace the custom field values for an order",
+    tags=["orders"],
+)
+async def save_order_field_values(
+    body: List[OrderFieldValueUpsert],
+    order_id: str = Path(..., description="The order id"),
+):
+    """Persist the order's custom field values (delete-then-insert). Empty
+    values are dropped, so clearing a field removes its row."""
+    return await field_definitions_service.save_order_values(order_id, body)
     
     
     

@@ -263,7 +263,10 @@ class OrderRepository:
     ) -> Optional[Dict[str, Any]]:
         params = {
             "id": f"eq.{order_id}",
-            "select": "*,customer:customers(*),vehicle:vehicles(*),order_files(*)",
+            "select": (
+                "*,customer:customers(*),vehicle:vehicles(*),order_files(*),"
+                "order_field_values(*,field_definition:field_definitions(*))"
+            ),
             "limit": "1",
         }
         async with httpx.AsyncClient() as client:
@@ -341,7 +344,8 @@ class OrderRepository:
                 "*,"
                 "customer:customers(*),"
                 "vehicle:vehicles(*),"
-                "order_files(*)"
+                "order_files(*),"
+                "order_field_values(*,field_definition:field_definitions(*))"
             ),
             "order": "date_order.desc",
             "limit": str(limit),

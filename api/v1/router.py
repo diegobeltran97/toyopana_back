@@ -10,6 +10,7 @@ from api.v1.endpoints import messaging
 from api.v1.endpoints import pipefy
 from api.v1.endpoints import attachments
 from api.v1.endpoints import orders
+from api.v1.endpoints import field_definitions
 from api.v1.endpoints import order_files
 from api.v1.endpoints import order_statuses
 from api.v1.endpoints import dashboard
@@ -26,6 +27,7 @@ router.include_router(messaging.router, prefix="/api/messaging", tags=["messagin
 router.include_router(pipefy.router, prefix="/api/pipefy", tags=["pipefy"])
 router.include_router(attachments.router, prefix="/api/attachments", tags=["attachments"])
 router.include_router(orders.router, prefix="/api/orders", tags=["orders"])
+router.include_router(field_definitions.router, prefix="/api/field-definitions", tags=["field-definitions"])
 router.include_router(order_files.router, prefix="/api/orders", tags=["orders"])
 router.include_router(order_statuses.router, prefix="/api/order-statuses", tags=["order-statuses"])
 router.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
