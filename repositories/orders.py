@@ -113,6 +113,102 @@ class CustomerRepository:
             response.raise_for_status()
             return response.json()[0]  # Return the created record
 
+    async def list_with_order_counts(
+        self,
+        organization_id: str,
+        search: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List customers within an organization with an embedded order count.
+
+        Uses PostgREST embedded resource count (`orders(count)`) so the
+        directory's "visitas" figure is computed in the same round trip as
+        the customer rows, rather than N+1 queries.
+
+        Args:
+            organization_id: The organization UUID
+            search: Optional term matched (ilike) against name/phone/national_id
+            limit: Max customers to return
+            offset: Pagination offset
+
+        Returns:
+            A list of customer dicts, each with an `orders: [{"count": N}]` key.
+        """
+        params: Dict[str, Any] = {
+            "select": "id,name,phone,national_id,type,source,created_at,orders(count)",
+            "organization_id": f"eq.{organization_id}",
+            "order": "created_at.desc",
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        if search:
+            params["or"] = (
+                f"(name.ilike.*{search}*,phone.ilike.*{search}*,"
+                f"national_id.ilike.*{search}*)"
+            )
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/customers",
+                params=params,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error(
+                    "Error listing customers with order counts for org %s: %s",
+                    organization_id,
+                    detail,
+                )
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            return response.json()
+
+    async def get_detail_with_orders(
+        self, customer_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get a single customer with its full order history embedded.
+
+        Each order carries its vehicle and assigned technician nested, so the
+        profile page can be built from a single PostgREST round trip.
+
+        Args:
+            customer_id: The customer UUID
+
+        Returns:
+            The customer record with an `orders` array, or None if not found.
+        """
+        params: Dict[str, Any] = {
+            "id": f"eq.{customer_id}",
+            "limit": "1",
+            "select": (
+                "*,orders(id,date_order,received_at,completed_at,order_status,"
+                "order_reason,service_type,total_amount,priority,km_in,"
+                "vehicle:vehicles(plate,make,model,year,km_last_service),"
+                "technician:app_users!orders_assigned_to_fkey(name))"
+            ),
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/customers",
+                params=params,
+                headers=self.headers,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.json() if response.text else str(exc)
+                logger.error(
+                    "Error fetching customer detail for %s: %s", customer_id, detail
+                )
+                raise HTTPException(status_code=response.status_code, detail=detail)
+            rows = response.json()
+            return rows[0] if rows else None
+
 
 class VehicleRepository:
     """Repository for managing vehicles in Supabase"""
