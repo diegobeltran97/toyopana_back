@@ -4,7 +4,9 @@ Both repositories are replaced with small fakes so the test exercises only the
 service's arithmetic (funnel wiring, conversion, response rate) with no I/O.
 """
 
-from services.marketing_service import get_marketing_metrics
+from datetime import datetime, timedelta
+
+from services.marketing_service import _boundaries, get_marketing_metrics
 
 
 class FakeDashboardRepo:
@@ -64,3 +66,16 @@ async def test_null_rates_when_no_data():
     assert m.response_rate is None
     assert m.appointments_scheduled == 0
     assert m.funnel.requiere_de_contacto == 0
+
+
+def test_boundaries_relative_offsets():
+    """Deterministic check that would catch a today/yesterday swap or wrong offset."""
+    today_start_iso, yesterday_start_iso, seven_days_ago_iso = _boundaries()
+
+    today_start = datetime.fromisoformat(today_start_iso)
+    yesterday_start = datetime.fromisoformat(yesterday_start_iso)
+    seven_days_ago = datetime.fromisoformat(seven_days_ago_iso)
+
+    assert today_start - yesterday_start == timedelta(days=1)
+    assert today_start - seven_days_ago == timedelta(days=7)
+    assert today_start > yesterday_start > seven_days_ago

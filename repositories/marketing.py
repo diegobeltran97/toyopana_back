@@ -15,6 +15,14 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# PostgREST caps the number of rows a single request can return (server-side
+# max-rows setting); a query with more matches than this is silently
+# truncated rather than erroring. This is a soft ceiling to make truncation
+# observable via logs rather than a hard guarantee of completeness. If
+# message volume grows past this, switch to full keyset pagination or a
+# Postgres RPC that aggregates server-side (documented follow-up).
+_MAX_CONVERSATION_ROWS = 10000
+
 
 class MarketingRepository:
     """Read-only aggregate queries over wa_messages / wa_conversations."""
@@ -99,6 +107,7 @@ class MarketingRepository:
         params = self._scoped_params(organization_id)
         params["direction"] = f"eq.{direction}"
         params["sent_at"] = f"gte.{sent_after}"
+        params["limit"] = str(_MAX_CONVERSATION_ROWS)
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -111,4 +120,13 @@ class MarketingRepository:
                 logger.error("Error fetching conversation ids: %s", detail)
                 raise HTTPException(status_code=response.status_code, detail=detail)
             rows = response.json()
+            if len(rows) >= _MAX_CONVERSATION_ROWS:
+                logger.warning(
+                    "conversation_ids_with_message hit the %d-row cap for org %s "
+                    "(direction=%s); results may be truncated and response_rate "
+                    "may be approximate.",
+                    _MAX_CONVERSATION_ROWS,
+                    organization_id,
+                    direction,
+                )
             return {row["conversation_id"] for row in rows if row.get("conversation_id")}

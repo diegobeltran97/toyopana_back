@@ -5,6 +5,8 @@ tests assert the PostgREST request it builds and how it parses the response,
 without touching the network.
 """
 
+import logging
+
 import repositories.marketing as marketing_repo_module
 from repositories.marketing import MarketingRepository
 
@@ -102,3 +104,35 @@ async def test_conversation_ids_dedupe_into_set(monkeypatch):
 
     assert ids == {"c1", "c2"}
     assert FakeAsyncClient.last_call["params"]["direction"] == "eq.inbound"
+
+
+async def test_conversation_ids_sends_row_cap_limit(monkeypatch):
+    _patch_client(monkeypatch, FakeResponse(json_data=[{"conversation_id": "c1"}]))
+    repo = MarketingRepository()
+
+    await repo.conversation_ids_with_message(
+        "org-1", "inbound", "2026-08-03T05:00:00+00:00"
+    )
+
+    assert FakeAsyncClient.last_call["params"]["limit"] == str(
+        marketing_repo_module._MAX_CONVERSATION_ROWS
+    )
+
+
+async def test_conversation_ids_warns_when_row_cap_is_hit(monkeypatch, caplog):
+    max_rows = marketing_repo_module._MAX_CONVERSATION_ROWS
+    rows = [{"conversation_id": f"c{i}"} for i in range(max_rows)]
+    _patch_client(monkeypatch, FakeResponse(json_data=rows))
+    repo = MarketingRepository()
+
+    with caplog.at_level(logging.WARNING, logger="repositories.marketing"):
+        ids = await repo.conversation_ids_with_message(
+            "org-1", "outbound", "2026-08-03T05:00:00+00:00"
+        )
+
+    assert len(ids) == max_rows
+    assert FakeAsyncClient.last_call["params"]["limit"] == str(max_rows)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "org-1" in warnings[0].message
+    assert "truncated" in warnings[0].message.lower()

@@ -42,7 +42,7 @@ def _boundaries() -> Tuple[str, str, str]:
 
 
 def _safe_ratio(numerator: int, denominator: int) -> Optional[float]:
-    """numerator / denominator rounded to 4 dp, or None when denominator is 0."""
+    """numerator / denominator rounded to 4 dp, or None when denominator is ≤ 0."""
     if denominator <= 0:
         return None
     return round(numerator / denominator, 4)
