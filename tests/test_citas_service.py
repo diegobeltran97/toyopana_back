@@ -15,6 +15,7 @@ from schemas.cita import CitaCreate, CitaStatus, CitaUpdate
 from services.citas_service import (
     ALLOWED_TRANSITIONS,
     create_cita,
+    delete_cita,
     list_citas,
     range_bounds,
     update_cita,
@@ -45,12 +46,14 @@ def _row(**overrides):
 
 
 class FakeRepo:
-    def __init__(self, *, existing=None, rows=None):
+    def __init__(self, *, existing=None, rows=None, deleted_result=True):
         self._existing = existing
         self._rows = rows if rows is not None else []
+        self._deleted_result = deleted_result
         self.created = None
         self.updated = None
         self.listed = None
+        self.deleted = None
 
     async def create(self, organization_id, data):
         self.created = (organization_id, data)
@@ -71,6 +74,10 @@ class FakeRepo:
     async def update(self, cita_id, organization_id, data):
         self.updated = (cita_id, organization_id, data)
         return _row(**{k: v for k, v in data.items() if k in _row()})
+
+    async def delete(self, cita_id, organization_id):
+        self.deleted = (cita_id, organization_id)
+        return self._deleted_result
 
 
 # --- range_bounds -----------------------------------------------------------
@@ -219,6 +226,33 @@ async def test_update_400_when_body_is_empty():
         await update_cita(ORG, CITA_ID, CitaUpdate(), repo=repo)
 
     assert exc.value.status_code == 400
+
+
+# --- delete -----------------------------------------------------------------
+
+async def test_delete_passes_the_tenant_guard_through():
+    repo = FakeRepo(deleted_result=True)
+
+    await delete_cita(ORG, CITA_ID, repo=repo)
+
+    assert repo.deleted == (CITA_ID, ORG)
+
+
+async def test_delete_404_when_nothing_was_removed():
+    with pytest.raises(HTTPException) as exc:
+        await delete_cita(ORG, CITA_ID, repo=FakeRepo(deleted_result=False))
+
+    assert exc.value.status_code == 404
+
+
+async def test_delete_works_from_a_terminal_state():
+    """Delete means 'this booking should never have existed', so unlike a status
+    change it is not bound by the transition table."""
+    repo = FakeRepo(existing=_row(status="cumplida"), deleted_result=True)
+
+    await delete_cita(ORG, CITA_ID, repo=repo)
+
+    assert repo.deleted == (CITA_ID, ORG)
 
 
 def test_terminal_states_have_no_outgoing_transitions():

@@ -73,6 +73,12 @@ class FakeAsyncClient:
         )
         return self._next()
 
+    async def delete(self, url, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"method": "DELETE", "url": url, "params": params, "headers": headers}
+        )
+        return self._next()
+
 
 def _patch_client(monkeypatch, *responses):
     FakeAsyncClient.calls = []
@@ -179,6 +185,28 @@ async def test_update_returns_none_when_nothing_matched(monkeypatch):
     repo = CitaRepository()
 
     assert await repo.update(CITA_ID, ORG, {"status": "confirmada"}) is None
+
+
+async def test_delete_is_tenant_scoped_and_reports_success(monkeypatch):
+    """Like PATCH, a DELETE must never be addressable by id alone."""
+    _patch_client(monkeypatch, FakeResponse(json_data=[{"id": CITA_ID}]))
+    repo = CitaRepository()
+
+    assert await repo.delete(CITA_ID, ORG) is True
+
+    call = FakeAsyncClient.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"].endswith("/citas")
+    assert call["params"]["id"] == f"eq.{CITA_ID}"
+    assert call["params"]["organization_id"] == f"eq.{ORG}"
+
+
+async def test_delete_returns_false_when_nothing_matched(monkeypatch):
+    """An unknown id, or one owned by another org, deletes nothing."""
+    _patch_client(monkeypatch, FakeResponse(json_data=[]))
+    repo = CitaRepository()
+
+    assert await repo.delete(CITA_ID, ORG) is False
 
 
 async def test_postgrest_error_becomes_http_exception(monkeypatch):

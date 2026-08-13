@@ -146,3 +146,29 @@ class CitaRepository:
             self._raise_for_status(response, f"updating cita {cita_id}")
             rows = response.json()
             return rows[0] if rows else None
+
+    async def delete(self, cita_id: str, organization_id: str) -> bool:
+        """
+        Permanently remove one cita, filtered by BOTH id and organization_id.
+
+        This is a hard delete — the only one in the citas slice. Cancelling a
+        booking is a status change ('cancelada') that keeps the row and its
+        history; deleting is for citas that should never have existed at all.
+
+        Returns:
+            True when a row was removed, False when nothing matched (unknown id,
+            or an id belonging to another organization).
+        """
+        params = {
+            "id": f"eq.{cita_id}",
+            "organization_id": f"eq.{organization_id}",
+        }
+        async with httpx.AsyncClient() as client:
+            # Prefer: return=representation (already in self.headers) makes
+            # PostgREST echo the deleted rows, which is how a miss is told
+            # apart from a success.
+            response = await client.delete(
+                f"{self.base_url}/citas", params=params, headers=self.headers
+            )
+            self._raise_for_status(response, f"deleting cita {cita_id}")
+            return bool(response.json())

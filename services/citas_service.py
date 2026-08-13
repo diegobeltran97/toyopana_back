@@ -204,3 +204,33 @@ async def update_cita(
         raise HTTPException(status_code=404, detail="Cita no encontrada")
 
     return CitaRead.model_validate(row)
+
+
+async def delete_cita(
+    organization_id: str,
+    cita_id: str,
+    *,
+    repo: Optional[CitaRepository] = None,
+) -> None:
+    """
+    Permanently remove a cita.
+
+    Deliberately NOT bound by ALLOWED_TRANSITIONS: cancelling a booking is a
+    status change to 'cancelada' (which keeps the row, so cancellations and
+    no-shows stay countable), whereas deleting says the cita should never have
+    existed — a mis-click or a test row — and is legal from any state.
+
+    Args:
+        organization_id: Owning organization UUID (also the write guard).
+        cita_id: The cita to remove.
+        repo: Injectable repository (defaults to the real one).
+
+    Raises:
+        HTTPException 404: no such cita in this organization.
+    """
+    repo = repo or CitaRepository()
+
+    if not await repo.delete(cita_id, organization_id):
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+
+    logger.info("Cita %s deleted from organization %s", cita_id, organization_id)

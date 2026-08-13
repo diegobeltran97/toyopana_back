@@ -102,3 +102,25 @@ async def update_cita(
     """
     organization_id = require_organization_id(current_user)
     return await citas_service.update_cita(organization_id, cita_id, payload)
+
+
+@router.delete(
+    "/{cita_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Permanently delete a cita",
+)
+async def delete_cita(
+    cita_id: str = Path(..., description="The cita id"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Hard-delete a cita.
+
+    This is for bookings that should never have existed. To record that a
+    customer cancelled, PATCH the status to 'cancelada' instead — that keeps the
+    row, and with it the cancellation history.
+
+    Returns 404 when the cita doesn't belong to the caller's organization.
+    """
+    organization_id = require_organization_id(current_user)
+    await citas_service.delete_cita(organization_id, cita_id)

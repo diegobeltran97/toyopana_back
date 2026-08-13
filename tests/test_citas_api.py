@@ -171,6 +171,32 @@ def test_patch_returns_updated_cita(monkeypatch):
     assert response.json()["status"] == "confirmada"
 
 
+def test_delete_returns_204_with_no_body(monkeypatch):
+    seen = {}
+
+    async def fake_delete(organization_id, cita_id):
+        seen["organization_id"] = organization_id
+        seen["cita_id"] = cita_id
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "delete_cita", fake_delete)
+
+    response = client.delete(f"/api/citas/{CITA_ID}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert seen["organization_id"] == ORG
+    assert seen["cita_id"] == CITA_ID
+
+
+def test_delete_403_when_the_user_has_no_organization():
+    """The destructive route must enforce tenancy like every other one."""
+    app.dependency_overrides[get_current_user] = lambda: {"id": "user-1"}
+
+    response = client.delete(f"/api/citas/{CITA_ID}")
+
+    assert response.status_code == 403
+
+
 def test_403_when_the_user_has_no_organization():
     """get_current_user's fallback branch (api/deps.py) omits organization_id."""
     app.dependency_overrides[get_current_user] = lambda: {
