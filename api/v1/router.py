@@ -16,6 +16,7 @@ from api.v1.endpoints import order_statuses
 from api.v1.endpoints import dashboard
 from api.v1.endpoints import customers
 from api.v1.endpoints import marketing
+from api.v1.endpoints import citas
 
 router = APIRouter()
 router.include_router(health.router, prefix="/api", tags=["health"])
@@ -35,3 +36,4 @@ router.include_router(order_statuses.router, prefix="/api/order-statuses", tags=
 router.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 router.include_router(customers.router, prefix="/api/customers", tags=["customers"])
 router.include_router(marketing.router, prefix="/api/marketing", tags=["marketing"])
+router.include_router(citas.router, prefix="/api/citas", tags=["citas"])
