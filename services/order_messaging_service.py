@@ -10,7 +10,7 @@ here and nowhere else:
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 from core.result import Result
 from integrations.messaging.base import MessagingProvider
@@ -48,11 +48,19 @@ def _is_send_allowed(order: OrderPayload) -> bool:
 
 async def send_ws_message_for_order(
     provider: MessagingProvider,
+    organization_id: str,
     to: str,
-    message: str,
     order: OrderPayload,
+    template: str,
+    params: Optional[Mapping[str, str]] = None,
 ) -> Result[SendWsMessageOutcome]:
-    """Send a message, then (only on success) advance the order's status.
+    """Send a templated message, then (only on success) advance the order.
+
+    Template-only on purpose: this is business-initiated outreach, which
+    official providers (Meta/Twilio) accept solely as approved copy referenced
+    by name. Sending operator free text here would work on Whapi and then
+    silently stop working on a provider switch, so the port is not given the
+    chance. Free-form replies belong to the (future, window-gated) reply flow.
 
     Returns a failure Result if the guard blocks the send or the provider
     rejects the message (the order is left untouched). Returns a success
@@ -64,7 +72,12 @@ async def send_ws_message_for_order(
         return Result.failure("spam_blocked", details="Blocked by anti-spam guard")
 
     # 1. Send. Business logic stays inside MessagingService.
-    sent = await MessagingService(provider).send_message(phone=to, message=message)
+    sent = await MessagingService(provider).send_template_message(
+        organization_id=organization_id,
+        phone=to,
+        template=template,
+        params=params or {},
+    )
     if not sent.ok:
         return Result.failure(
             sent.error, status_code=sent.status_code, details=sent.details

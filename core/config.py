@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     PIPEFY_API_TOKEN: str
     WHAPIFY_API_TOKEN: str
     WHAPIFY_BASE_URL: str = "https://gate.whapi.cloud"  # Optional with default
+    # Active messaging provider. Must be a key of the factory's builder map;
+    # an unknown value raises at startup rather than falling back silently.
+    WHATSAPP_PROVIDER: str = "whapi"
     ENVIRONMENT: str = "development"  # Optional with default
 
     class Config:

@@ -1,18 +1,16 @@
 import logging
 from typing import List, Dict, Any
 from core.config import settings
+from integrations.messaging.factory import get_messaging_provider
+from services.messaging_service import MessagingService
 from services.pipefy_service import update_event_actions
 from repositories.whapify_repository import WhapifyRepository
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DELIVERY_NOTIFICATION_TEMPLATE = """Hola {customer_name}, ¿cómo estás?
-
-Te escribimos porque tienes una cotización pendiente con nosotros para tu {car_info}.
-
-En este momento puedes aprovechar el beneficio de pagar con tarjeta BAC o St. George Bank hasta un plazo de 12 meses sin intereses.
-
-Si deseas retomar el trabajo o agendar tu cita, estamos disponibles para ayudarte."""
+# The template this legacy path sends. The copy itself now lives in the
+# message_templates table; only the name is referenced here.
+DELIVERY_TEMPLATE_NAME = "delivery_notification"
 
 # Initialize repository singleton
 _whapify_repo: WhapifyRepository | None = None
@@ -276,38 +274,53 @@ async def send_delivery_notification(
         message: Optional custom message. Falls back to the default template.
 
     Returns:
-        dict: Response from send_whatsapp_message
+        dict: {"success": bool, "data"/"error"/"status_code"/"details"}.
+        The dict shape is kept for the existing endpoint contract; the send
+        itself now goes through the provider-agnostic messaging port.
     """
-    outbound_message = (
-        message
-        or DEFAULT_DELIVERY_NOTIFICATION_TEMPLATE.format(
-            customer_name=customer_name,
-            car_info=car_info,
-        )
-    ).strip()
-
-    if not outbound_message:
-        return {
-            "success": False,
-            "error": "bad_request",
-            "details": "Message cannot be empty",
-            "status_code": 400,
-        }
+    # An empty/whitespace override counts as "no override" and falls back to
+    # the template, matching the previous `(message or TEMPLATE).strip()`.
+    custom_message = (message or "").strip()
 
     logger.info(f"Preparing delivery notification for {customer_name} - {car_info}")
-    
+
     try:
-        result = await send_whatsapp_message(phone=phone, message=outbound_message)
-        
-        await update_event_actions(event_id=card_id, actions_taken={"whatsapp_sent": True})
-        
-        
-        if result.get("success"):
-            logger.info(f"Delivery notification sent successfully to {customer_name}")
-            
-            return result
+        service = MessagingService(get_messaging_provider())
+
+        if custom_message:
+            # Free-form override. NOTE: on official providers (Meta/Twilio)
+            # this is only deliverable inside the 24h customer-service window.
+            result = await service.send_message(phone=phone, message=custom_message)
         else:
-            logger.error(f"Failed to send delivery notification to {customer_name}: {result.get('error')}")
+            # Business-initiated: goes by template name, so the same call
+            # works once an official provider is plugged in.
+            result = await service.send_template_message(
+                # Legacy path: no authenticated user, so the org comes from
+                # config. Dies with the Pipefy teardown.
+                organization_id=str(settings.ORGANIZATION_ID),
+                phone=phone,
+                template=DELIVERY_TEMPLATE_NAME,
+                params={"customer_name": customer_name, "car_info": car_info},
+            )
+
+        await update_event_actions(event_id=card_id, actions_taken={"whatsapp_sent": True})
+
+        if result.ok:
+            logger.info(f"Delivery notification sent successfully to {customer_name}")
+            return {
+                "success": True,
+                "data": result.value.model_dump() if result.value else None,
+            }
+
+        logger.error(
+            f"Failed to send delivery notification to {customer_name}: {result.error}"
+        )
+        return {
+            "success": False,
+            "error": result.error,
+            "status_code": result.status_code,
+            "details": result.details,
+        }
     except Exception as e:
         logger.error(f"Error sending delivery notification: {str(e)}", exc_info=True)
         return {"success": False, "error": "unexpected", "details": str(e)}

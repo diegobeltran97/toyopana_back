@@ -12,7 +12,7 @@ provider, not on the port.
 from typing import Protocol, runtime_checkable
 
 from core.result import Result
-from schemas.messaging import OutboundMessage, SentMessage
+from schemas.messaging import OutboundMessage, OutboundTemplate, SentMessage
 
 
 @runtime_checkable
@@ -21,4 +21,14 @@ class MessagingProvider(Protocol):
 
     async def send_text(self, msg: OutboundMessage) -> Result[SentMessage]:
         """Send a plain text message to a single recipient."""
+        ...
+
+    async def send_template(self, msg: OutboundTemplate) -> Result[SentMessage]:
+        """Send a templated message, referenced by name.
+
+        Separate from send_text because the two are not interchangeable on
+        official providers: business-initiated messages MUST be templates,
+        while free text is only allowed inside the 24h window. Providers with
+        no template concept satisfy this by rendering the copy locally.
+        """
         ...

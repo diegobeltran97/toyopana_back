@@ -8,7 +8,7 @@ endpoints never see it.
 
 from typing import Any, Dict
 
-from schemas.messaging import OutboundMessage, SentMessage
+from schemas.messaging import OutboundMessage, OutboundTemplate, SentMessage
 from integrations.whapi.wire import SendTextWire
 
 # Panama country code. Kept here because "what a phone number means" is a
@@ -33,6 +33,27 @@ def outbound_to_wire(msg: OutboundMessage) -> Dict[str, Any]:
     return SendTextWire(
         to=to_whatsapp_id(msg.phone),
         body=msg.body,
+        typing_time=msg.typing_time,
+    ).model_dump(exclude_none=True)
+
+
+def template_to_wire(msg: OutboundTemplate) -> Dict[str, Any]:
+    """Resolved OutboundTemplate -> Whapi POST /messages/text body.
+
+    Whapi has no template endpoint, so the copy is rendered here and sent as
+    ordinary text. ``msg.language`` and ``msg.provider_template_name`` are
+    intentionally ignored -- Whapi has no concept of either. An official
+    provider's mapper does the opposite: it sends the approved name and the
+    params by reference and never touches ``body``.
+
+    Raises:
+        KeyError: if a parameter the copy requires was not supplied. Callers
+            validate first; this is the last line of defence against sending
+            a message with a literal ``{car_info}`` in it.
+    """
+    return SendTextWire(
+        to=to_whatsapp_id(msg.phone),
+        body=msg.body.format(**msg.params).strip(),
         typing_time=msg.typing_time,
     ).model_dump(exclude_none=True)
 
