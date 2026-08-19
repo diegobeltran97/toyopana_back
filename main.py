@@ -3,9 +3,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
 from core.cors import add_cors
 from api.v1.router import router as v1_router
+from integrations.messaging.factory import verify_provider_configured
 
 def create_app() -> FastAPI:
     app = FastAPI(title="WhatsApp Metrics API", version="1.0.0")
+
+    # Fail on boot, not on the first customer message, if WHATSAPP_PROVIDER
+    # names a provider that does not exist.
+    verify_provider_configured()
 
     # Add CORS middleware first
     add_cors(app)

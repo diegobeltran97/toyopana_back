@@ -17,6 +17,7 @@ from api.v1.endpoints import dashboard
 from api.v1.endpoints import customers
 from api.v1.endpoints import marketing
 from api.v1.endpoints import citas
+from api.v1.endpoints import templates
 
 router = APIRouter()
 router.include_router(health.router, prefix="/api", tags=["health"])
@@ -37,3 +38,4 @@ router.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboar
 router.include_router(customers.router, prefix="/api/customers", tags=["customers"])
 router.include_router(marketing.router, prefix="/api/marketing", tags=["marketing"])
 router.include_router(citas.router, prefix="/api/citas", tags=["citas"])
+router.include_router(templates.router, prefix="/api/templates", tags=["templates"])

@@ -6,7 +6,7 @@ one method the provider uses.
 """
 
 from core.result import Result
-from schemas.messaging import OutboundMessage
+from schemas.messaging import OutboundMessage, OutboundTemplate
 from integrations.messaging.base import MessagingProvider
 from integrations.whapi.provider import WhapiProvider
 
@@ -52,6 +52,74 @@ class TestSendText:
         assert result.error == "rate_limit"
         assert result.status_code == 429
         assert result.value is None
+
+
+class TestSendTemplate:
+    """The provider receives an already-resolved template.
+
+    Lookup and parameter validation happen in MessagingService, so the provider
+    has no organization context and never touches the template store.
+    """
+
+    def _resolved(self, **overrides):
+        base = dict(
+            phone="6123 4567",
+            name="delivery_notification",
+            params={"customer_name": "Diego", "car_info": "Toyota Camry 2020"},
+            body="Hola {customer_name}, tu {car_info} te espera.",
+        )
+        base.update(overrides)
+        return OutboundTemplate(**base)
+
+    async def test_renders_resolved_copy_and_sends_as_text(self):
+        client = FakeClient(
+            Result.success({"sent": True, "message": {"id": "m2", "chat_id": "x"}})
+        )
+        provider = WhapiProvider(client)
+
+        result = await provider.send_template(self._resolved())
+
+        assert result.ok is True
+        assert result.value.id == "m2"
+        # Whapi has no template endpoint: the copy is rendered client-side and
+        # delivered through the ordinary text payload.
+        body = client.received_payload["body"]
+        assert "Hola Diego" in body
+        assert "Toyota Camry 2020" in body
+        assert client.received_payload["to"] == "50761234567@s.whatsapp.net"
+
+    async def test_provider_template_name_is_ignored_by_whapi(self):
+        client = FakeClient(
+            Result.success({"sent": True, "message": {"id": "m3", "chat_id": "x"}})
+        )
+        provider = WhapiProvider(client)
+
+        await provider.send_template(self._resolved(provider_template_name="meta_tpl_1"))
+
+        # Whapi sends rendered text; the approved-name reference is Class B only.
+        assert "meta_tpl_1" not in str(client.received_payload)
+
+    async def test_unresolved_param_fails_instead_of_sending_placeholder_copy(self):
+        client = FakeClient(Result.success({}))
+        provider = WhapiProvider(client)
+
+        result = await provider.send_template(
+            self._resolved(params={"customer_name": "Diego"})  # car_info absent
+        )
+
+        assert result.ok is False
+        assert result.error == "bad_request"
+        assert client.received_payload is None
+
+    async def test_propagates_client_failure(self):
+        client = FakeClient(Result.failure("rate_limit", status_code=429))
+        provider = WhapiProvider(client)
+
+        result = await provider.send_template(self._resolved())
+
+        assert result.ok is False
+        assert result.error == "rate_limit"
+        assert result.status_code == 429
 
 
 def test_whapi_provider_satisfies_messaging_port():

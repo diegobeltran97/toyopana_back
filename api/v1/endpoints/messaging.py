@@ -5,20 +5,36 @@ MessagingService facade; all transport logic lives in the Whapi integration.
 """
 
 import logging
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from api.deps import get_current_user
 from integrations.messaging.base import MessagingProvider
 from integrations.messaging.factory import get_messaging_provider
 from schemas.messaging import SentMessage
 from schemas.order_messaging import OrderPayload
+from services import templates_service
 from services.messaging_service import MessagingService
 from services.order_messaging_service import send_ws_message_for_order
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def require_organization_id(current_user: dict) -> str:
+    """Pull the caller's organization out of the authenticated user.
+
+    Templates are per-tenant, so the org must come from the token and never
+    from the request body. Mirrors the citas routes.
+    """
+    organization_id = current_user.get("organization_id")
+    if not organization_id:
+        raise HTTPException(
+            status_code=403, detail="El usuario no pertenece a una organización"
+        )
+    return str(organization_id)
 
 
 class SendTextRequest(BaseModel):
@@ -37,11 +53,33 @@ class SendTextRequest(BaseModel):
 
 
 class SendWsMessageRequest(BaseModel):
-    """Request body: send a WhatsApp message and advance the order status."""
+    """Request body: send a WhatsApp message and advance the order status.
+
+    Template-only by design. Business-initiated outreach must reference
+    approved copy by name -- operator free text is not accepted here, because
+    official providers (Meta/Twilio) reject it outside the 24h
+    customer-service window. Free-form replies have their own endpoint
+    (POST /send-text) and will be window-gated once inbound webhooks land.
+    """
 
     to: str = Field(..., description="Recipient phone number (any human format)")
-    message: str = Field(..., min_length=1, description="Text to send")
     order: OrderPayload = Field(..., description="Full order object; requires `id`")
+    template: str = Field(
+        ..., description="Registered template name, e.g. 'delivery_notification'"
+    )
+    params: Dict[str, str] = Field(
+        default_factory=dict, description="Values for the template's parameters"
+    )
+
+
+class TemplateResponse(BaseModel):
+    """A backend-owned message template."""
+
+    id: str = Field(..., description="Template row id")
+    name: str = Field(..., description="Template name used when sending")
+    body: str = Field(..., description="Copy, with {param} placeholders")
+    params: List[str] = Field(..., description="Parameter names the body requires")
+    language: str = Field(..., description="Template language code")
 
 
 class SendWsMessageResponse(BaseModel):
@@ -72,6 +110,36 @@ _ERROR_HTTP = {
 _DEFAULT_ERROR = (status.HTTP_502_BAD_GATEWAY, "Failed to send WhatsApp message.")
 
 
+@router.get(
+    "/templates",
+    response_model=List[TemplateResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the available message templates",
+    tags=["messaging"],
+)
+async def list_message_templates(
+    current_user: dict = Depends(get_current_user),
+) -> List[TemplateResponse]:
+    """Return the organization's templates.
+
+    The frontend reads its message copy from here rather than hardcoding a
+    second version, so the two can never drift. On an official provider this
+    copy is the local mirror of what is approved upstream.
+    """
+    organization_id = require_organization_id(current_user)
+    rows = await templates_service.list_templates(organization_id)
+    return [
+        TemplateResponse(
+            id=row["id"],
+            name=row["name"],
+            body=row["body"],
+            params=list(row.get("params") or []),
+            language=row.get("language") or "es",
+        )
+        for row in rows
+    ]
+
+
 @router.post(
     "/send-text",
     response_model=SentMessage,
@@ -91,11 +159,12 @@ async def send_text(
     )
 
     if result.ok:
+        assert result.value is not None  # narrow: ok Result always carries a value
         logger.info("Message %s sent to %s", result.value.id, result.value.to)
         return result.value
 
     logger.error("Send failed: %s (%s)", result.error, result.details)
-    http_status, detail = _ERROR_HTTP.get(result.error, _DEFAULT_ERROR)
+    http_status, detail = _ERROR_HTTP.get(result.error or "", _DEFAULT_ERROR)
     raise HTTPException(status_code=http_status, detail=detail)
 
 
@@ -109,13 +178,16 @@ async def send_text(
 async def send_ws_message(
     payload: SendWsMessageRequest,
     provider: MessagingProvider = Depends(get_messaging_provider),
+    current_user: dict = Depends(get_current_user),
 ) -> SendWsMessageResponse:
     """Send a message, then advance the order to 'contactado' on success."""
     result = await send_ws_message_for_order(
         provider,
+        organization_id=require_organization_id(current_user),
         to=payload.to,
-        message=payload.message,
         order=payload.order,
+        template=payload.template,
+        params=payload.params,
     )
 
     if result.ok:
@@ -137,5 +209,5 @@ async def send_ws_message(
         )
 
     logger.error("send-ws-message failed: %s (%s)", result.error, result.details)
-    http_status, detail = _ERROR_HTTP.get(result.error, _DEFAULT_ERROR)
+    http_status, detail = _ERROR_HTTP.get(result.error or "", _DEFAULT_ERROR)
     raise HTTPException(status_code=http_status, detail=detail)
