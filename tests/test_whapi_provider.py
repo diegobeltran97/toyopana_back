@@ -6,7 +6,12 @@ one method the provider uses.
 """
 
 from core.result import Result
-from schemas.messaging import OutboundMessage, OutboundTemplate
+from schemas.messaging import (
+    OutboundButton,
+    OutboundInteractive,
+    OutboundMessage,
+    OutboundTemplate,
+)
 from integrations.messaging.base import MessagingProvider
 from integrations.whapi.provider import WhapiProvider
 
@@ -125,3 +130,65 @@ class TestSendTemplate:
 def test_whapi_provider_satisfies_messaging_port():
     provider = WhapiProvider(client=FakeClient(Result.success({})))
     assert isinstance(provider, MessagingProvider)
+
+
+class FakeInteractiveClient:
+    """Double for the interactive endpoint, mirroring FakeClient's shape."""
+
+    def __init__(self, result: Result):
+        self._result = result
+        self.received_payload = None
+
+    async def post_interactive_message(self, payload):
+        self.received_payload = payload
+        return self._result
+
+
+MENU = OutboundInteractive(
+    phone="6851 0658",
+    body="Hola 👋 ¿En qué te podemos ayudar?",
+    buttons=[
+        OutboundButton(id="menu_agendar_cita", title="Agendar cita"),
+        OutboundButton(id="menu_cotizacion", title="Cotización"),
+        OutboundButton(id="menu_otro", title="Otro"),
+    ],
+)
+
+
+class TestSendInteractive:
+    async def test_sends_the_menu_and_returns_sent_message(self):
+        client = FakeInteractiveClient(
+            Result.success(
+                {"sent": True, "message": {"id": "m9", "chat_id": "50768510658@s.whatsapp.net"}}
+            )
+        )
+
+        result = await WhapiProvider(client).send_interactive(MENU)
+
+        assert result.ok is True
+        assert result.value.id == "m9"
+        assert result.value.status == "sent"
+
+    async def test_hits_the_interactive_endpoint_not_the_text_one(self):
+        client = FakeInteractiveClient(Result.success({"sent": True, "message": {"id": "m9"}}))
+
+        await WhapiProvider(client).send_interactive(MENU)
+
+        assert client.received_payload["type"] == "button"
+        assert len(client.received_payload["action"]["buttons"]) == 3
+
+    async def test_propagates_a_client_failure_with_its_error_code(self):
+        client = FakeInteractiveClient(Result.failure("rate_limit", status_code=429))
+
+        result = await WhapiProvider(client).send_interactive(MENU)
+
+        assert result.ok is False
+        assert result.error == "rate_limit"
+        assert result.status_code == 429
+
+
+class TestPortConformance:
+    def test_the_provider_still_satisfies_the_messaging_port(self):
+        """send_interactive joins the port, so the Protocol check must still
+        hold -- a provider missing it would fail here rather than at runtime."""
+        assert isinstance(WhapiProvider(FakeInteractiveClient(Result.success({}))), MessagingProvider)

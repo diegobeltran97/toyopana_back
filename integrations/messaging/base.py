@@ -12,7 +12,12 @@ provider, not on the port.
 from typing import Protocol, runtime_checkable
 
 from core.result import Result
-from schemas.messaging import OutboundMessage, OutboundTemplate, SentMessage
+from schemas.messaging import (
+    OutboundInteractive,
+    OutboundMessage,
+    OutboundTemplate,
+    SentMessage,
+)
 
 
 @runtime_checkable
@@ -30,5 +35,17 @@ class MessagingProvider(Protocol):
         official providers: business-initiated messages MUST be templates,
         while free text is only allowed inside the 24h window. Providers with
         no template concept satisfy this by rendering the copy locally.
+        """
+        ...
+
+    async def send_interactive(self, msg: OutboundInteractive) -> Result[SentMessage]:
+        """Send a short menu of quick-reply buttons.
+
+        On the port rather than on the Whapi adapter because the menu is how
+        the product routes conversations without paying an LLM: the button ids
+        come back on the next inbound message. Meta and Twilio both express
+        interactive messages, so a provider that cannot offer buttons is a
+        provider this product cannot use -- which is exactly what belonging on
+        the port means.
         """
         ...

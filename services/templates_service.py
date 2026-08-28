@@ -43,9 +43,18 @@ def _validate_params_match_body(body: str, params: List[str]) -> None:
         )
 
 
-async def list_templates(organization_id: str) -> List[Dict[str, Any]]:
-    """Every active template for an organization."""
-    return await MessageTemplateRepository().list(organization_id)
+async def list_templates(
+    organization_id: str, active_only: bool = True
+) -> List[Dict[str, Any]]:
+    """Templates for an organization; active ones only unless told otherwise.
+
+    The send flow wants only what it may dispatch, so that is the default. The
+    authoring surface passes ``active_only=False``: a deactivated template that
+    the editor cannot see is a template nobody can ever reactivate.
+    """
+    return await MessageTemplateRepository().list(
+        organization_id, active_only=active_only
+    )
 
 
 async def resolve(organization_id: str, name: str) -> Optional[MessageTemplate]:

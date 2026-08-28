@@ -8,8 +8,13 @@ endpoints never see it.
 
 from typing import Any, Dict
 
-from schemas.messaging import OutboundMessage, OutboundTemplate, SentMessage
-from integrations.whapi.wire import SendTextWire
+from schemas.messaging import (
+    OutboundInteractive,
+    OutboundMessage,
+    OutboundTemplate,
+    SentMessage,
+)
+from integrations.whapi.wire import SendInteractiveWire, SendTextWire
 
 # Panama country code. Kept here because "what a phone number means" is a
 # provider/transport concern, not a business one.
@@ -26,6 +31,17 @@ def to_whatsapp_id(phone: str, country_code: str = DEFAULT_COUNTRY_CODE) -> str:
     if not digits.startswith(country_code):
         digits = country_code + digits
     return f"{digits}@s.whatsapp.net"
+
+
+def from_whatsapp_id(chat_id: str) -> str:
+    """Normalize a Whapi chat id into an E.164 phone number.
+
+    The inverse of to_whatsapp_id(). Inbound payloads carry ids like
+    ``50761234567@s.whatsapp.net``; the domain speaks ``+50761234567``, so the
+    suffix dies here rather than leaking into services.
+    """
+    digits = "".join(filter(str.isdigit, chat_id.split("@", 1)[0]))
+    return f"+{digits}"
 
 
 def outbound_to_wire(msg: OutboundMessage) -> Dict[str, Any]:
@@ -66,3 +82,17 @@ def wire_to_sent(raw: Dict[str, Any]) -> SentMessage:
         to=message.get("chat_id") or message.get("to"),
         status="sent" if raw.get("sent") else "failed",
     )
+
+
+def interactive_to_wire(msg: OutboundInteractive) -> Dict[str, Any]:
+    """Domain OutboundInteractive -> Whapi POST /messages/interactive body."""
+    return SendInteractiveWire(
+        to=to_whatsapp_id(msg.phone),
+        type="button",
+        body={"text": msg.body},
+        action={
+            "buttons": [
+                {"type": "quick_reply", "title": b.title, "id": b.id} for b in msg.buttons
+            ]
+        },
+    ).model_dump()

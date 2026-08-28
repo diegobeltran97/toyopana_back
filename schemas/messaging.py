@@ -6,7 +6,7 @@ wire formats live under integrations/<provider>/wire.py and are translated to
 and from these by the provider's mapper.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -58,3 +58,35 @@ class SentMessage(BaseModel):
     id: Optional[str] = Field(None, description="Provider message id")
     to: Optional[str] = Field(None, description="Normalized recipient id")
     status: str = Field(..., description="'sent' or 'failed'")
+
+
+class OutboundButton(BaseModel):
+    """One quick-reply button on an interactive message.
+
+    `id` is the important half: it comes back verbatim as the reply id on the
+    customer's next inbound message, and that is what lets the webhook route a
+    menu tap deterministically instead of paying an LLM to read "Cotización".
+    """
+
+    id: str = Field(..., min_length=1, description="Routing key echoed back on the reply")
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=25,
+        description="Button label. WhatsApp caps this at 25 characters",
+    )
+
+
+class OutboundInteractive(BaseModel):
+    """A message offering the customer a short menu of buttons.
+
+    The limits are WhatsApp's, not Whapi's -- Meta enforces the same ones -- so
+    they are validated here in the domain rather than discovered as a 400 from
+    whichever provider is active.
+    """
+
+    phone: str = Field(..., description="Recipient phone number (any human format)")
+    body: str = Field(..., min_length=1, description="The prompt shown above the buttons")
+    buttons: List[OutboundButton] = Field(
+        ..., min_length=1, max_length=3, description="1-3 quick-reply buttons"
+    )

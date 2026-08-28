@@ -86,7 +86,11 @@ def _to_read(row: Dict) -> TemplateRead:
 async def list_templates(
     current_user: dict = Depends(get_current_user),
 ) -> List[TemplateRead]:
-    rows = await templates_service.list_templates(require_organization_id(current_user))
+    # Inactive templates included: this is the editor, and copy it cannot see is
+    # copy nobody can reactivate. The send flow's listing stays active-only.
+    rows = await templates_service.list_templates(
+        require_organization_id(current_user), active_only=False
+    )
     return [_to_read(row) for row in rows]
 
 

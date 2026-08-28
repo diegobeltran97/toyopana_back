@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     # Active messaging provider. Must be a key of the factory's builder map;
     # an unknown value raises at startup rather than falling back silently.
     WHATSAPP_PROVIDER: str = "whapi"
+    # Shared secret Whapi sends back in the X-Webhook-Token header. Empty means
+    # the inbound webhook rejects everything -- deliberate: a blank secret must
+    # never read as "no authentication required".
+    WHAPI_WEBHOOK_SECRET: str = ""
     ENVIRONMENT: str = "development"  # Optional with default
 
     class Config:

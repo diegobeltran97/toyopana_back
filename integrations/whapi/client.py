@@ -71,3 +71,7 @@ class WhapiClient:
     async def post_text_message(self, payload: Dict[str, Any]) -> Result[dict]:
         """POST /messages/text"""
         return await self._request("POST", "/messages/text", json=payload)
+
+    async def post_interactive_message(self, payload: Dict[str, Any]) -> Result[dict]:
+        """POST /messages/interactive"""
+        return await self._request("POST", "/messages/interactive", json=payload)
