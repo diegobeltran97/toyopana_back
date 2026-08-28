@@ -190,3 +190,34 @@ class TestPostTwoHundredProcessing:
 
         assert response.status_code == 200
         assert handled == []
+
+
+class TestSecretInThePath:
+    """Fallback for providers that cannot send custom headers -- which is
+    Whapi's case: its panel offers no header configuration, only a URL.
+
+    The secret in the path authenticates just as well, at the cost of being
+    written to access logs (Render's, and any proxy's) where a header would
+    not be. Accepted deliberately; see the spec's decision 2.
+    """
+
+    def _post_path(self, secret):
+        return client.post(
+            f"/api/webhooks/whatsapp/whapi/{secret}", json=TEXT_PAYLOAD
+        )
+
+    def test_the_correct_secret_in_the_path_is_accepted(self):
+        assert self._post_path(SECRET).status_code == 200
+
+    def test_a_wrong_secret_in_the_path_is_rejected(self):
+        assert self._post_path("no-es-el-secreto").status_code == 403
+
+    def test_a_path_secret_still_reaches_the_store(self, _no_db):
+        self._post_path(SECRET)
+
+        assert len(_no_db) == 1
+
+    def test_the_header_route_keeps_working(self):
+        """Kept so a move to a provider that signs (Meta) or a future Whapi
+        that supports headers needs no change here."""
+        assert _post().status_code == 200

@@ -16,7 +16,7 @@ duplicate messages to a real customer.
 
 import logging
 import secrets
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 
@@ -33,26 +33,44 @@ logger = logging.getLogger(__name__)
 WEBHOOK_TOKEN_HEADER = "X-Webhook-Token"
 
 
-def _verify(request: Request) -> None:
-    """Authenticate the caller by shared secret.
+def _verify(request: Request, path_secret: Optional[str] = None) -> None:
+    """Authenticate the caller by shared secret, from the path or a header.
 
-    A header, not a path segment: a secret in the URL ends up written to the
-    access logs of the host and of every proxy in between. Whapi does not sign
-    its payloads, so this is the whole of the authentication.
+    Whapi does not sign its payloads AND its panel cannot send custom headers
+    -- only a URL -- so the path segment is the channel that actually works
+    today. The header is kept because it is strictly better where available:
+    a URL is written to the host's and every proxy's access logs, a header is
+    not. A move to Meta (which signs) or a Whapi that gains header support then
+    needs no change here.
 
     compare_digest, not `==`, so the comparison does not leak the secret's
-    length or prefix through timing.
+    length or prefix through timing -- with `==` an attacker can recover the
+    secret one character at a time by measuring how long the check takes.
     """
     expected = getattr(settings, "WHAPI_WEBHOOK_SECRET", "") or ""
-    provided = request.headers.get(WEBHOOK_TOKEN_HEADER) or ""
 
-    if not expected or not secrets.compare_digest(provided, expected):
+    # An empty configured secret must never read as "no authentication
+    # required", so it fails closed before anything is compared.
+    if not expected:
+        logger.error("WHAPI_WEBHOOK_SECRET sin configurar; se rechaza todo")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    candidates = [request.headers.get(WEBHOOK_TOKEN_HEADER) or "", path_secret or ""]
+    # compare_digest against every candidate rather than short-circuiting, so
+    # the work done does not depend on which channel carried the secret.
+    if not any(secrets.compare_digest(c, expected) for c in candidates):
         # Deliberately no body logged: an unauthenticated caller's payload is
         # not ours to record.
         logger.warning("Webhook de Whapi rechazado: token inválido o ausente")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
+@router.post(
+    "/webhooks/whatsapp/whapi/{path_secret}",
+    status_code=status.HTTP_200_OK,
+    summary="Receive inbound WhatsApp events from Whapi (secret in the path)",
+    tags=["webhooks"],
+)
 @router.post(
     "/webhooks/whatsapp/whapi",
     status_code=status.HTTP_200_OK,
@@ -63,6 +81,7 @@ async def receive_whapi_webhook(
     request: Request,
     background: BackgroundTasks,
     provider: MessagingProvider = Depends(get_messaging_provider),
+    path_secret: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Accept inbound events from Whapi and store them for processing.
 
@@ -71,7 +90,7 @@ async def receive_whapi_webhook(
     sign the raw body, and Twilio does not even send JSON -- keeping the raw
     request here is what lets a second provider reuse this shape.
     """
-    _verify(request)
+    _verify(request, path_secret)
 
     try:
         raw = await request.json()
