@@ -22,7 +22,7 @@ from repositories.conversations import (
     upsert_conversation,
 )
 from schemas.inbound import InboundMessage
-from schemas.messaging import OutboundButton, OutboundInteractive
+from schemas.messaging import OutboundButton, OutboundInteractive, OutboundMessage
 
 logger = logging.getLogger(__name__)
 
@@ -31,29 +31,94 @@ logger = logging.getLogger(__name__)
 BOT_OWNED_STATUS = "bot"
 
 
-def _welcome_menu(phone: str) -> OutboundInteractive:
-    """The hardcoded welcome menu.
+# ---------------------------------------------------------------------------
+# The reply tree.
+#
+# A dict, not a table, ON PURPOSE and for now. The expensive part of this
+# feature was never the storage -- it is knowing what the flow should say, and
+# a dict teaches that just as well as a schema would while the pilot customer
+# is still telling us what he wants. Moving it to a `flow jsonb` column on
+# tenant_bot_config is mechanical once the shape stops changing.
+#
+# Each node: `mensaje` (required) plus optional `botones`. A node with no
+# buttons goes out as plain text -- WhatsApp requires at least one button on an
+# interactive message, so the two cannot share a send path.
+#
+# WhatsApp caps interactive messages at 3 buttons. Needing a fourth option
+# means switching to a list message (up to 10), which is a different Whapi
+# payload shape.
+# ---------------------------------------------------------------------------
 
-    HARDCODED ON PURPOSE, FOR NOW. When tenant_bot_config lands this copy comes
-    from that tenant's row instead -- the shape does not change, only where the
-    strings come from.
+NODO_INICIAL = "inicio"
 
-    The button ids are the contract with the inbound side: they come back as
-    `reply.buttons_reply.id`, which is what lets the next message be routed
-    deterministically instead of being read by an LLM.
-    """
-    return OutboundInteractive(
-        phone=phone,
-        body=(
+FLUJO: dict = {
+    "inicio": {
+        "mensaje": (
             "Hola 👋 Gracias por contactar a Suspensiones Toyopana. "
             "¿En qué te podemos ayudar?"
         ),
-        buttons=[
-            OutboundButton(id="menu_agendar_cita", title="Agendar cita"),
-            OutboundButton(id="menu_cotizacion", title="Cotización"),
-            OutboundButton(id="menu_otro", title="Otro"),
+        "botones": [
+            ("menu_agendar_cita", "Agendar cita"),
+            ("menu_cotizacion", "Cotización"),
+            ("menu_horarios", "Horarios y ubicación"),
         ],
+    },
+    "menu_horarios": {
+        # Los asteriscos son negrita en WhatsApp, no markdown nuestro.
+        "mensaje": (
+            "🕐 *Horario de atención*\n"
+            "Lunes a viernes: 8:00 a.m. – 5:00 p.m.\n"
+            "Sábados: 8:00 a.m. – 3:00 p.m.\n"
+            "Domingos: cerrado\n\n"
+            "📍 *Cómo llegar*\n"
+            "Vía Fernández de Córdoba, Vista Hermosa.\n"
+            "Plaza Toledo, Local #6 — busca el aviso en letras verdes "
+            "que dice *Suspensiones Toyopana*.\n\n"
+            "Estamos frente a la entrada del taller AutoColor, "
+            "al lado de Burger King.\n\n"
+            "🗺️ En Waze o Google Maps búscanos como *Suspensiones Toyopana*.\n\n"
+            "¿Necesitas algo más? Escríbenos y con gusto te ayudamos."
+        ),
+    },
+    "menu_agendar_cita": {
+        "mensaje": (
+            "Con gusto te agendamos 📅\n\n"
+            "Indícanos qué día y hora te quedan bien, y el modelo de tu vehículo. "
+            "Un asesor te confirma en breve."
+        ),
+    },
+    "menu_cotizacion": {
+        "mensaje": (
+            "Para cotizarte necesitamos 🛠️\n\n"
+            "• La pieza que buscas\n"
+            "• Marca, modelo y año del vehículo\n\n"
+            "Escríbenos esos datos y te pasamos precio y disponibilidad."
+        ),
+    },
+}
+
+
+def _node_to_message(node: dict, phone: str):
+    """A tree node -> the outbound DTO its shape calls for.
+
+    Buttons or no buttons decides which provider call is legal, so the branch
+    lives here rather than being re-derived at the send site.
+    """
+    botones = node.get("botones") or []
+
+    if not botones:
+        return OutboundMessage(phone=phone, body=node["mensaje"])
+
+    return OutboundInteractive(
+        phone=phone,
+        body=node["mensaje"],
+        buttons=[OutboundButton(id=bid, title=titulo) for bid, titulo in botones],
     )
+
+
+def _welcome_menu(phone: str) -> OutboundInteractive:
+    """The tree's entry node."""
+    return _node_to_message(FLUJO[NODO_INICIAL], phone)
 
 
 def _only_digits(phone: str) -> str:
@@ -82,15 +147,21 @@ def _is_reply_allowed(phone: str) -> bool:
     return _only_digits(phone) in allowed
 
 
-def _decide_reply(event: InboundMessage) -> Optional[OutboundInteractive]:
+def _decide_reply(event: InboundMessage):
     """Decide what to answer (SEAM).
 
-    FUTURE, in this order:
-      1. `event.reply_id` is set -> deterministic handler for that menu option.
-         Costs nothing and covers most traffic.
-      2. free text -> the DecisionEngine (Claude) with org-scoped tools.
-    Today it always answers the welcome menu.
+    1. A tapped button routes through the tree. Deterministic, costs nothing,
+       and covers the traffic we can anticipate.
+    2. Anything else -- free text, or a button id the tree no longer has
+       (an old chat still showing a retired menu) -- falls back to the welcome
+       menu. THIS is where the DecisionEngine (Claude) goes: the fallback is
+       the seam, not a dead end.
     """
+    node = FLUJO.get(event.reply_id or "")
+    if node is not None:
+        return _node_to_message(node, event.from_phone)
+
+    # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
     return _welcome_menu(event.from_phone)
 
 
@@ -141,7 +212,12 @@ async def handle_inbound(
         return
 
     try:
-        result = await provider.send_interactive(reply)
+        # A text node and a button node are different provider calls; sending a
+        # buttonless message through send_interactive would be rejected.
+        if isinstance(reply, OutboundInteractive):
+            result = await provider.send_interactive(reply)
+        else:
+            result = await provider.send_text(reply)
     except Exception:
         logger.exception("Falló el envío de la respuesta a %s", event.from_phone)
         return

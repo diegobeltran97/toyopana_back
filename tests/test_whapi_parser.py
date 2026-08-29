@@ -155,3 +155,88 @@ class TestChannelRouting:
         """The tenant is resolved from channel_id, so it cannot stay buried in
         the raw payload."""
         assert parser.channel_id(TEXT_PAYLOAD) == "TOYOPANA-M72HC"
+
+
+SYSTEM_MESSAGE_PAYLOAD = {
+    "messages": [
+        {
+            "id": "O6twkPMAFbxlRw-heBkXgkAQMI",
+            "from": "50768510658",
+            "type": "unknown",
+            "source": "system",
+            "chat_id": "50768510658@s.whatsapp.net",
+            "from_me": False,
+            "starred": False,
+            "from_name": "Diego Sastoque",
+            "timestamp": 1788024098,
+        }
+    ],
+    "event": {"type": "messages", "event": "post"},
+    "channel_id": "TOYOPANA-M72HC",
+}
+
+REAL_BUTTON_REPLY_PAYLOAD = {
+    "messages": [
+        {
+            "id": "OqhcCzaDAQfAaQ-hY5kXgkAQMI",
+            "from_me": False,
+            "type": "reply",
+            "chat_id": "50768510658@s.whatsapp.net",
+            "timestamp": 1788024125,
+            "reply": {
+                "type": "buttons_reply",
+                # Whapi prefixes the id we sent. Captured from production.
+                "buttons_reply": {"id": "ButtonsV3:menu_agendar_cita", "title": "Agendar cita"},
+            },
+            "from": "50768510658",
+        }
+    ],
+    "event": {"type": "messages", "event": "post"},
+    "channel_id": "TOYOPANA-M72HC",
+}
+
+
+class TestSystemMessagesAreIgnored:
+    """Regression: the bot answered the welcome menu three times per message.
+
+    WhatsApp emits protocol-level notifications that Whapi forwards as
+    messages with `type: "unknown"`, `source: "system"` and from_me false.
+    They carry no text and no reply. Filtering on from_me alone let them
+    through as if a customer had written, and each one triggered a reply.
+
+    Captured from production: one "Buenas tardes" at 12:21:35 was followed by
+    two of these at 12:21:38 and 12:21:39, producing three menus in a row.
+    """
+
+    def test_a_system_message_produces_no_event(self):
+        assert parser.parse(SYSTEM_MESSAGE_PAYLOAD) == []
+
+    def test_a_type_we_do_not_handle_produces_no_event(self):
+        """Unhandled types must fail closed: stored raw, never answered.
+        Anything else means a future WhatsApp message kind starts making the
+        bot talk on its own."""
+        payload = {**TEXT_PAYLOAD, "messages": [{**TEXT_PAYLOAD["messages"][0], "type": "image"}]}
+
+        assert parser.parse(payload) == []
+
+    def test_a_real_message_arriving_with_system_noise_still_gets_through(self):
+        """The real message must survive being batched with the noise."""
+        payload = {
+            **TEXT_PAYLOAD,
+            "messages": [TEXT_PAYLOAD["messages"][0], SYSTEM_MESSAGE_PAYLOAD["messages"][0]],
+        }
+
+        events = parser.parse(payload)
+
+        assert len(events) == 1
+        assert events[0].body == "Hola, ya está listo mi repuesto?"
+
+
+class TestButtonIdsRoundTrip:
+    """The id we send must be the id we get back, or deterministic routing
+    silently never matches."""
+
+    def test_the_whapi_prefix_is_stripped_from_the_reply_id(self):
+        [event] = parser.parse(REAL_BUTTON_REPLY_PAYLOAD)
+
+        assert event.reply_id == "menu_agendar_cita"

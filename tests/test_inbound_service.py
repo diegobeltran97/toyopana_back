@@ -44,10 +44,15 @@ class FakeProvider:
 
     def __init__(self, result=None):
         self.result = result or Result.success(SentMessage(id="out1", to="x", status="sent"))
-        self.sent = []
+        self.sent = []        # interactive messages
+        self.sent_text = []   # plain text messages
 
     async def send_interactive(self, msg):
         self.sent.append(msg)
+        return self.result
+
+    async def send_text(self, msg):
+        self.sent_text.append(msg)
         return self.result
 
 
@@ -112,7 +117,7 @@ class TestWelcomeReply:
         assert [b.id for b in provider.sent[0].buttons] == [
             "menu_agendar_cita",
             "menu_cotizacion",
-            "menu_otro",
+            "menu_horarios",
         ]
 
     async def test_the_menu_goes_back_to_whoever_wrote_in(self, repo):
@@ -243,3 +248,80 @@ class TestAllowlistDeTesting:
         )
 
         assert len(provider.sent) == 1
+
+
+class TestFlujoDeBotones:
+    """The reply tree: a tapped button routes to its node, deterministically.
+
+    This is the half of the bot that costs nothing per message. Anything the
+    tree does not cover falls through to the welcome menu today, and to the
+    LLM later -- the fallback is the seam, not a dead end.
+    """
+
+    async def test_horarios_devuelve_el_horario_y_no_el_menu(self, repo):
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        )
+
+        [enviado] = provider.sent_text
+        assert "orario" in enviado.body
+
+    async def test_horarios_incluye_la_direccion_del_taller(self, repo):
+        """Asserts the address itself, not the heading above it. An earlier
+        version checked for the word "ubicación" and broke when the heading was
+        reworded -- while the message was still perfectly correct."""
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        )
+
+        [enviado] = provider.sent_text
+        assert "Plaza Toledo" in enviado.body
+
+    async def test_una_respuesta_de_solo_texto_no_manda_botones(self, repo):
+        """A node with no options must go out via send_text: send_interactive
+        requires at least one button and would reject it."""
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        )
+
+        assert provider.sent == []
+
+    async def test_el_menu_de_bienvenida_ofrece_horarios(self, repo):
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+
+        assert "menu_horarios" in [b.id for b in provider.sent[0].buttons]
+
+    async def test_texto_libre_sigue_devolviendo_la_bienvenida(self, repo):
+        """Until the LLM lands, anything off-tree gets the menu again."""
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(body="necesito unas pastillas")
+        )
+
+        assert len(provider.sent) == 1
+
+    async def test_un_boton_desconocido_no_rompe_nada(self, repo):
+        """A stale menu in an old chat can send an id the tree no longer has."""
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(reply_id="boton_que_ya_no_existe")
+        )
+
+        assert len(provider.sent) == 1
+
+    async def test_la_respuesta_de_texto_queda_registrada(self, repo):
+        await inbound_service.handle_inbound(
+            FakeProvider(), organization_id=ORG, event=_event(reply_id="menu_horarios")
+        )
+
+        assert [m for m in repo.messages if m["direction"] == "outbound"]
