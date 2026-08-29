@@ -171,3 +171,36 @@ class TestInteractiveToWire:
             "menu_cotizacion",
             "menu_otro",
         ]
+
+
+class TestInternationalNumbersAreNotMangled:
+    """Regression: a reply to a non-Panama number went to a number that does
+    not exist.
+
+    to_whatsapp_id was written for the outbound case, where an operator types a
+    local Panama number. The inbound path now feeds it the E.164 that
+    from_whatsapp_id produced, and blindly prefixing 507 to an already
+    international number silently invents a new one. Whapi ACCEPTS the send and
+    returns a message id, so nothing looks wrong until the customer says they
+    got nothing.
+
+    The `+` is the unambiguous signal: by definition it means the country code
+    is already there.
+    """
+
+    def test_an_e164_number_keeps_its_own_country_code(self):
+        assert mapper.to_whatsapp_id("+13135555657") == "13135555657@s.whatsapp.net"
+
+    def test_round_trips_a_us_number(self):
+        chat_id = "13135555657@s.whatsapp.net"
+
+        assert mapper.to_whatsapp_id(mapper.from_whatsapp_id(chat_id)) == chat_id
+
+    def test_round_trips_a_colombian_number(self):
+        chat_id = "573001234567@s.whatsapp.net"
+
+        assert mapper.to_whatsapp_id(mapper.from_whatsapp_id(chat_id)) == chat_id
+
+    def test_a_local_number_without_a_plus_still_gets_panama(self):
+        """The original behaviour, which the outbound flow depends on."""
+        assert mapper.to_whatsapp_id("6123 4567") == "50761234567@s.whatsapp.net"

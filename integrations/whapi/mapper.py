@@ -24,12 +24,25 @@ DEFAULT_COUNTRY_CODE = "507"
 def to_whatsapp_id(phone: str, country_code: str = DEFAULT_COUNTRY_CODE) -> str:
     """Normalize a human phone number into a Whapi chat id.
 
-    Strips non-digits and ensures the country code prefix, then appends the
+    Strips non-digits, ensures a country code, then appends the
     ``@s.whatsapp.net`` suffix Whapi expects.
+
+    A leading ``+`` means the number is already E.164 and keeps its own country
+    code. Without it, a local Panama number is assumed and 507 is prefixed --
+    which is what an operator typing "6123 4567" into the app means.
+
+    That distinction is not cosmetic: this function also runs on the inbound
+    reply path, on the E.164 that from_whatsapp_id produced. Prefixing 507 to
+    "+13135555657" invents "50713135555657", and Whapi ACCEPTS the send and
+    returns a message id for it, so the failure is invisible until a customer
+    reports never getting an answer.
     """
+    international = phone.lstrip().startswith("+")
     digits = "".join(filter(str.isdigit, phone))
-    if not digits.startswith(country_code):
+
+    if not international and not digits.startswith(country_code):
         digits = country_code + digits
+
     return f"{digits}@s.whatsapp.net"
 
 

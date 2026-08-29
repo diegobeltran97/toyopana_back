@@ -14,6 +14,7 @@ Two seams are deliberately marked and live nowhere else:
 import logging
 from typing import Optional
 
+from core.config import settings
 from integrations.messaging.base import MessagingProvider
 from repositories.conversations import (
     record_message,
@@ -53,6 +54,32 @@ def _welcome_menu(phone: str) -> OutboundInteractive:
             OutboundButton(id="menu_otro", title="Otro"),
         ],
     )
+
+
+def _only_digits(phone: str) -> str:
+    """Compare numbers by their digits alone.
+
+    The setting is typed by a human, so "+507 6851-0658", "507 6851 0658" and
+    "50768510658" all have to mean the same number. A formatting difference
+    silently stopping the replies would look exactly like a broken bot.
+    """
+    return "".join(filter(str.isdigit, phone))
+
+
+def _is_reply_allowed(phone: str) -> bool:
+    """Testing-mode allowlist.
+
+    Empty setting means disabled: everyone gets a reply. That direction matters
+    -- forgetting to configure this can never silence the bot, while setting it
+    by accident is loud (every skip is logged) and obvious.
+    """
+    raw = getattr(settings, "WHATSAPP_ALLOWED_NUMBERS", "") or ""
+    allowed = {_only_digits(n) for n in raw.split(",") if _only_digits(n)}
+
+    if not allowed:
+        return True
+
+    return _only_digits(phone) in allowed
 
 
 def _decide_reply(event: InboundMessage) -> Optional[OutboundInteractive]:
@@ -97,6 +124,15 @@ async def handle_inbound(
             "Conversación %s en estado %r; el bot no responde",
             conversation_id,
             conversation.get("status"),
+        )
+        return
+
+    # Testing-mode gate. Placed here, after persistence, on purpose: an
+    # unlisted customer's message is still recorded, so testing never costs
+    # visibility into what real people are sending.
+    if not _is_reply_allowed(event.from_phone):
+        logger.warning(
+            "WHATSAPP_ALLOWED_NUMBERS activo: no se responde a %s", event.from_phone
         )
         return
 

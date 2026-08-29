@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     # the inbound webhook rejects everything -- deliberate: a blank secret must
     # never read as "no authentication required".
     WHAPI_WEBHOOK_SECRET: str = ""
+    # Testing-mode allowlist: comma-separated numbers that may receive a reply.
+    # EMPTY = disabled = the bot answers everyone, which is the production
+    # behaviour. Set it while testing against a live channel so real customers
+    # never get a half-built bot; unset it to go live. Never the other way
+    # round: an accidental value here silences the bot for everyone else.
+    WHATSAPP_ALLOWED_NUMBERS: str = ""
     ENVIRONMENT: str = "development"  # Optional with default
 
     class Config:

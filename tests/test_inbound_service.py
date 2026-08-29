@@ -20,6 +20,12 @@ ORG = "11111111-1111-1111-1111-111111111111"
 CONVERSATION_ID = "22222222-2222-2222-2222-222222222222"
 
 
+def _event_from(phone):
+    """Same event, from a given sender."""
+    e = _event()
+    return e.model_copy(update={"from_phone": phone})
+
+
 def _event(body="Hola", reply_id=None):
     return InboundMessage(
         provider="whapi",
@@ -156,3 +162,84 @@ class TestFailuresAreContained:
         await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
 
         assert [m for m in repo.messages if m["direction"] == "outbound"] == []
+
+
+class TestAllowlistDeTesting:
+    """Test-mode allowlist: while testing against a live channel, only the
+    numbers listed may receive a reply.
+
+    Deliberately gated at the REPLY step, not at the webhook: an unlisted
+    message is still stored, so testing does not cost visibility into what real
+    customers are sending. Empty setting = disabled = everyone gets a reply,
+    so forgetting to set it can never silence the bot.
+    """
+
+    @pytest.fixture
+    def allowlist(self, monkeypatch):
+        def _set(value):
+            monkeypatch.setattr(
+                inbound_service.settings, "WHATSAPP_ALLOWED_NUMBERS", value, raising=False
+            )
+        return _set
+
+    async def test_a_listed_number_gets_the_welcome_menu(self, repo, allowlist):
+        allowlist("50768510658")
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event_from("+50768510658")
+        )
+
+        assert len(provider.sent) == 1
+
+    async def test_an_unlisted_number_gets_no_reply(self, repo, allowlist):
+        allowlist("50768510658")
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event_from("+50761112222")
+        )
+
+        assert provider.sent == []
+
+    async def test_an_unlisted_number_is_still_stored(self, repo, allowlist):
+        """Testing must not blind us to what real customers are writing."""
+        allowlist("50768510658")
+
+        await inbound_service.handle_inbound(
+            FakeProvider(), organization_id=ORG, event=_event_from("+50761112222")
+        )
+
+        assert [m for m in repo.messages if m["direction"] == "inbound"]
+
+    async def test_an_empty_setting_disables_the_allowlist(self, repo, allowlist):
+        """The default. Forgetting to configure it must never silence the bot."""
+        allowlist("")
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event_from("+50761112222")
+        )
+
+        assert len(provider.sent) == 1
+
+    async def test_the_number_matches_however_it_is_written(self, repo, allowlist):
+        """A leading + or spaces in the env var must not silently stop replies."""
+        allowlist("+507 6851-0658")
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event_from("+50768510658")
+        )
+
+        assert len(provider.sent) == 1
+
+    async def test_several_numbers_can_be_listed(self, repo, allowlist):
+        allowlist("50768510658, 50761112222")
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event_from("+50761112222")
+        )
+
+        assert len(provider.sent) == 1
