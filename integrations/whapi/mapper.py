@@ -97,15 +97,54 @@ def wire_to_sent(raw: Dict[str, Any]) -> SentMessage:
     )
 
 
+# WhatsApp renders at most this many options as quick-reply buttons; beyond it
+# the only expressible form is a list.
+MAX_BUTTONS = 3
+
+
 def interactive_to_wire(msg: OutboundInteractive) -> Dict[str, Any]:
-    """Domain OutboundInteractive -> Whapi POST /messages/interactive body."""
+    """Domain OutboundInteractive -> Whapi POST /messages/interactive body.
+
+    Picks the WhatsApp mechanism that fits the number of options: buttons up to
+    three, a list from four to ten. The caller never states which -- it says
+    "offer these options" and this decides, so the platform's cap does not leak
+    into the services, and a provider with different caps changes only here.
+
+    Both forms preserve the option ids: they come back as the reply id and are
+    what routes the next message deterministically.
+    """
+    to = to_whatsapp_id(msg.phone)
+    body = {"text": msg.body}
+
+    if len(msg.buttons) <= MAX_BUTTONS:
+        return SendInteractiveWire(
+            to=to,
+            type="button",
+            body=body,
+            action={
+                "buttons": [
+                    {"type": "quick_reply", "title": b.title, "id": b.id}
+                    for b in msg.buttons
+                ]
+            },
+        ).model_dump()
+
     return SendInteractiveWire(
-        to=to_whatsapp_id(msg.phone),
-        type="button",
-        body={"text": msg.body},
+        to=to,
+        type="list",
+        body=body,
         action={
-            "buttons": [
-                {"type": "quick_reply", "title": b.title, "id": b.id} for b in msg.buttons
-            ]
+            "list": {
+                # Without a label WhatsApp shows no control to open the list.
+                "label": msg.list_label,
+                "sections": [
+                    {
+                        "rows": [
+                            {"id": b.id, "title": b.title, "description": ""}
+                            for b in msg.buttons
+                        ]
+                    }
+                ],
+            }
         },
     ).model_dump()

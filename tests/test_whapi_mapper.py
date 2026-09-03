@@ -99,13 +99,16 @@ class TestOutboundInteractiveValidation:
     as a 400 from the provider. They are platform limits (Meta enforces the
     same), so they belong here and not in the Whapi adapter."""
 
-    def test_rejects_more_than_three_buttons(self):
-        with pytest.raises(ValidationError):
-            OutboundInteractive(
-                phone="61234567",
-                body="Elige",
-                buttons=[OutboundButton(id=f"b{i}", title=f"Opción {i}") for i in range(4)],
-            )
+    def test_accepts_a_fourth_option(self):
+        """Four options are legal in the domain -- the adapter renders them as
+        a list instead of buttons. See TestCuatroOpcionesUsanLista."""
+        msg = OutboundInteractive(
+            phone="61234567",
+            body="Elige",
+            buttons=[OutboundButton(id=f"b{i}", title=f"Opción {i}") for i in range(4)],
+        )
+
+        assert len(msg.buttons) == 4
 
     def test_rejects_a_button_title_longer_than_25_characters(self):
         with pytest.raises(ValidationError):
@@ -204,3 +207,47 @@ class TestInternationalNumbersAreNotMangled:
     def test_a_local_number_without_a_plus_still_gets_panama(self):
         """The original behaviour, which the outbound flow depends on."""
         assert mapper.to_whatsapp_id("6123 4567") == "50761234567@s.whatsapp.net"
+
+
+class TestCuatroOpcionesUsanLista:
+    """WhatsApp caps quick-reply buttons at 3. A fourth option is only
+    expressible as a list message -- same endpoint, different payload.
+
+    The choice lives in the mapper, not in the caller: the business says
+    "offer these options" and the adapter picks the mechanism that fits. A
+    service that had to know about the limit would leak WhatsApp into the
+    domain, and would have to change again for a provider with other caps.
+    """
+
+    def _menu(self, n):
+        return OutboundInteractive(
+            phone="6851 0658",
+            body="¿En qué te podemos ayudar?",
+            buttons=[OutboundButton(id=f"op{i}", title=f"Opción {i}") for i in range(n)],
+        )
+
+    def test_tres_opciones_siguen_siendo_botones(self):
+        assert mapper.interactive_to_wire(self._menu(3))["type"] == "button"
+
+    def test_cuatro_opciones_se_envian_como_lista(self):
+        assert mapper.interactive_to_wire(self._menu(4))["type"] == "list"
+
+    def test_la_lista_conserva_los_ids_que_son_la_llave_de_ruteo(self):
+        wire = mapper.interactive_to_wire(self._menu(4))
+
+        filas = wire["action"]["list"]["sections"][0]["rows"]
+        assert [f["id"] for f in filas] == ["op0", "op1", "op2", "op3"]
+
+    def test_la_lista_trae_una_etiqueta_para_abrirla(self):
+        """Without a label WhatsApp shows no way to open the list."""
+        wire = mapper.interactive_to_wire(self._menu(4))
+
+        assert wire["action"]["list"]["label"]
+
+    def test_se_aceptan_hasta_diez_opciones(self):
+        assert mapper.interactive_to_wire(self._menu(10))["type"] == "list"
+
+    def test_once_opciones_se_rechazan(self):
+        """WhatsApp's list cap. Fails here instead of as a 400 from Whapi."""
+        with pytest.raises(ValidationError):
+            self._menu(11)

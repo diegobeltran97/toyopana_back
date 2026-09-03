@@ -39,6 +39,26 @@ def _event(body="Hola", reply_id=None):
     )
 
 
+async def entregar(provider, event, org=ORG):
+    """handle_inbound, then wait out the debounce.
+
+    Replies are no longer immediate: a burst is answered once, after the
+    customer stops writing. Tests that assert on the reply have to wait for
+    that, the same as a real customer does.
+    """
+    await inbound_service.handle_inbound(provider, organization_id=org, event=event)
+    await inbound_service.wait_for_pending()
+
+
+@pytest.fixture(autouse=True)
+def _debounce_corto(monkeypatch):
+    """Keep the suite fast, and never leave a timer running between tests."""
+    monkeypatch.setattr(inbound_service, "DEBOUNCE_SECONDS", 0.05)
+    inbound_service._reset_debounce()
+    yield
+    inbound_service._reset_debounce()
+
+
 class FakeProvider:
     """Records what was sent; satisfies only what the service calls."""
 
@@ -67,7 +87,14 @@ def repo(monkeypatch):
             self.window_touched = False
 
         async def upsert_conversation(self, **kwargs):
-            return {"id": CONVERSATION_ID, "status": self.status}
+            # One conversation per chat, like the real UNIQUE
+            # (organization_id, wa_chat_id). Returning a single id for every
+            # chat would have two customers share one debounce buffer.
+            chat = kwargs.get("chat_id", "")
+            return {
+                "id": CONVERSATION_ID if "50768510658" in chat else f"conv-{chat}",
+                "status": self.status,
+            }
 
         async def record_message(self, **kwargs):
             self.messages.append(kwargs)
@@ -84,19 +111,19 @@ def repo(monkeypatch):
 
 class TestPersistence:
     async def test_stores_the_inbound_message(self, repo):
-        await inbound_service.handle_inbound(FakeProvider(), organization_id=ORG, event=_event())
+        await entregar(FakeProvider(), _event())
 
         inbound = [m for m in repo.messages if m["direction"] == "inbound"]
         assert len(inbound) == 1
 
     async def test_the_stored_message_keeps_the_provider_id_for_deduplication(self, repo):
-        await inbound_service.handle_inbound(FakeProvider(), organization_id=ORG, event=_event())
+        await entregar(FakeProvider(), _event())
 
         inbound = [m for m in repo.messages if m["direction"] == "inbound"][0]
         assert inbound["wa_message_id"] == "wamid.1"
 
     async def test_refreshes_the_24h_window(self, repo):
-        await inbound_service.handle_inbound(FakeProvider(), organization_id=ORG, event=_event())
+        await entregar(FakeProvider(), _event())
 
         assert repo.window_touched is True
 
@@ -105,31 +132,32 @@ class TestWelcomeReply:
     async def test_replies_with_the_welcome_menu(self, repo):
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert len(provider.sent) == 1
 
-    async def test_the_menu_offers_the_three_business_options(self, repo):
+    async def test_the_menu_offers_the_four_business_options(self, repo):
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert [b.id for b in provider.sent[0].buttons] == [
             "menu_agendar_cita",
             "menu_cotizacion",
             "menu_horarios",
+            "menu_otro",
         ]
 
     async def test_the_menu_goes_back_to_whoever_wrote_in(self, repo):
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert provider.sent[0].phone == "+50768510658"
 
     async def test_the_sent_menu_is_recorded_as_an_outbound_message(self, repo):
         """Otherwise the thread has a gap and the marketing metrics undercount."""
-        await inbound_service.handle_inbound(FakeProvider(), organization_id=ORG, event=_event())
+        await entregar(FakeProvider(), _event())
 
         assert [m for m in repo.messages if m["direction"] == "outbound"]
 
@@ -141,14 +169,14 @@ class TestHumanHandoff:
         repo.status = "agent"
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert provider.sent == []
 
     async def test_still_stores_the_message_when_a_human_owns_it(self, repo):
         repo.status = "agent"
 
-        await inbound_service.handle_inbound(FakeProvider(), organization_id=ORG, event=_event())
+        await entregar(FakeProvider(), _event())
 
         assert [m for m in repo.messages if m["direction"] == "inbound"]
 
@@ -159,12 +187,12 @@ class TestFailuresAreContained:
         task and lose the message we just stored."""
         provider = FakeProvider(Result.failure("rate_limit", status_code=429))
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
     async def test_a_failed_send_is_not_recorded_as_an_outbound_message(self, repo):
         provider = FakeProvider(Result.failure("rate_limit", status_code=429))
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert [m for m in repo.messages if m["direction"] == "outbound"] == []
 
@@ -191,8 +219,7 @@ class TestAllowlistDeTesting:
         allowlist("50768510658")
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event_from("+50768510658")
+        await entregar(provider, _event_from("+50768510658")
         )
 
         assert len(provider.sent) == 1
@@ -201,8 +228,7 @@ class TestAllowlistDeTesting:
         allowlist("50768510658")
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event_from("+50761112222")
+        await entregar(provider, _event_from("+50761112222")
         )
 
         assert provider.sent == []
@@ -211,8 +237,7 @@ class TestAllowlistDeTesting:
         """Testing must not blind us to what real customers are writing."""
         allowlist("50768510658")
 
-        await inbound_service.handle_inbound(
-            FakeProvider(), organization_id=ORG, event=_event_from("+50761112222")
+        await entregar(FakeProvider(), _event_from("+50761112222")
         )
 
         assert [m for m in repo.messages if m["direction"] == "inbound"]
@@ -222,8 +247,7 @@ class TestAllowlistDeTesting:
         allowlist("")
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event_from("+50761112222")
+        await entregar(provider, _event_from("+50761112222")
         )
 
         assert len(provider.sent) == 1
@@ -233,8 +257,7 @@ class TestAllowlistDeTesting:
         allowlist("+507 6851-0658")
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event_from("+50768510658")
+        await entregar(provider, _event_from("+50768510658")
         )
 
         assert len(provider.sent) == 1
@@ -243,8 +266,7 @@ class TestAllowlistDeTesting:
         allowlist("50768510658, 50761112222")
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event_from("+50761112222")
+        await entregar(provider, _event_from("+50761112222")
         )
 
         assert len(provider.sent) == 1
@@ -261,8 +283,7 @@ class TestFlujoDeBotones:
     async def test_horarios_devuelve_el_horario_y_no_el_menu(self, repo):
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        await entregar(provider, _event(reply_id="menu_horarios")
         )
 
         [enviado] = provider.sent_text
@@ -274,8 +295,7 @@ class TestFlujoDeBotones:
         reworded -- while the message was still perfectly correct."""
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        await entregar(provider, _event(reply_id="menu_horarios")
         )
 
         [enviado] = provider.sent_text
@@ -286,8 +306,7 @@ class TestFlujoDeBotones:
         requires at least one button and would reject it."""
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event(reply_id="menu_horarios")
+        await entregar(provider, _event(reply_id="menu_horarios")
         )
 
         assert provider.sent == []
@@ -295,7 +314,7 @@ class TestFlujoDeBotones:
     async def test_el_menu_de_bienvenida_ofrece_horarios(self, repo):
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(provider, organization_id=ORG, event=_event())
+        await entregar(provider, _event())
 
         assert "menu_horarios" in [b.id for b in provider.sent[0].buttons]
 
@@ -303,8 +322,7 @@ class TestFlujoDeBotones:
         """Until the LLM lands, anything off-tree gets the menu again."""
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event(body="necesito unas pastillas")
+        await entregar(provider, _event(body="necesito unas pastillas")
         )
 
         assert len(provider.sent) == 1
@@ -313,15 +331,207 @@ class TestFlujoDeBotones:
         """A stale menu in an old chat can send an id the tree no longer has."""
         provider = FakeProvider()
 
-        await inbound_service.handle_inbound(
-            provider, organization_id=ORG, event=_event(reply_id="boton_que_ya_no_existe")
+        await entregar(provider, _event(reply_id="boton_que_ya_no_existe")
         )
 
         assert len(provider.sent) == 1
 
     async def test_la_respuesta_de_texto_queda_registrada(self, repo):
-        await inbound_service.handle_inbound(
-            FakeProvider(), organization_id=ORG, event=_event(reply_id="menu_horarios")
+        await entregar(FakeProvider(), _event(reply_id="menu_horarios")
         )
 
         assert [m for m in repo.messages if m["direction"] == "outbound"]
+
+
+class TestPalabrasClaveEnTextoLibre:
+    """Free text that clearly names a menu option routes to it directly.
+
+    Cheap and worth it: someone who types "cual es el horario" wants the
+    answer, not a menu asking them to pick it. Each keyword hit is also one
+    fewer LLM call once the model lands, so this layer keeps paying for itself.
+
+    Deliberately narrow -- only unambiguous words. Guessing wrong is worse
+    than showing the menu, because the customer gets a confident answer to a
+    question they did not ask.
+    """
+
+    async def _responder(self, texto, repo):
+        provider = FakeProvider()
+        await entregar(provider, _event(body=texto)
+        )
+        return provider
+
+    async def test_horario_devuelve_el_horario(self, repo):
+        provider = await self._responder("cual es el horario?", repo)
+
+        assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_ubicacion_devuelve_la_direccion(self, repo):
+        provider = await self._responder("me pasas la ubicacion", repo)
+
+        assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_funciona_con_tilde(self, repo):
+        """"ubicación" and "ubicacion" must behave the same -- people type both."""
+        provider = await self._responder("cuál es la ubicación?", repo)
+
+        assert provider.sent_text
+
+    async def test_funciona_en_mayusculas(self, repo):
+        provider = await self._responder("HORARIO", repo)
+
+        assert provider.sent_text
+
+    async def test_donde_quedan_devuelve_la_direccion(self, repo):
+        provider = await self._responder("donde quedan ubicados", repo)
+
+        assert provider.sent_text
+
+    async def test_texto_sin_palabra_clave_sigue_devolviendo_el_menu(self, repo):
+        provider = await self._responder("necesito pastillas para un Corolla", repo)
+
+        assert provider.sent and not provider.sent_text
+
+
+class TestDebounce:
+    """Wait for the customer to stop typing before answering.
+
+    Measured on 4 days of the pilot's real traffic: 25% of inbound messages
+    arrive within 25s of the previous one in the same chat. Answering each
+    fragment means replying before the customer finished the thought --
+    "Buenas" / "venden cubre carter?" / "Elantra 2011" is ONE question sent as
+    three messages, and today it draws three welcome menus.
+    """
+
+    @pytest.fixture(autouse=True)
+    def sin_espera(self, monkeypatch):
+        """A tiny delay, not zero: these assert the aggregation, not the
+        clock, but zero would let a timer fire between two handle_inbound
+        calls and make the tests non-deterministic."""
+        monkeypatch.setattr(inbound_service, "DEBOUNCE_SECONDS", 0.05)
+        inbound_service._reset_debounce()
+
+    async def _entra(self, provider, event):
+        """Raw handle_inbound: these tests control the waiting themselves."""
+        await inbound_service.handle_inbound(provider, organization_id=ORG, event=event)
+
+    async def test_un_mensaje_suelto_recibe_una_respuesta(self, repo):
+        provider = FakeProvider()
+
+        await self._entra(provider, _event(body="Buenas"))
+        await inbound_service.wait_for_pending()
+
+        assert len(provider.sent) + len(provider.sent_text) == 1
+
+    async def test_tres_mensajes_seguidos_reciben_UNA_respuesta(self, repo):
+        """The regression this whole feature exists for."""
+        provider = FakeProvider()
+
+        await self._entra(provider, _event(body="Buenas"))
+        await self._entra(provider, _event(body="venden cubre carter?"))
+        await self._entra(provider, _event(body="Elantra 2011"))
+        await inbound_service.wait_for_pending()
+
+        assert len(provider.sent) + len(provider.sent_text) == 1
+
+    async def test_la_decision_ve_todos_los_mensajes_de_la_rafaga(self, repo):
+        """Deciding on the last message alone loses the question: someone who
+        asks the schedule and then says "gracias" would be answered on
+        "gracias"."""
+        provider = FakeProvider()
+
+        await self._entra(provider, _event(body="cual es el horario?"))
+        await self._entra(provider, _event(body="gracias"))
+        await inbound_service.wait_for_pending()
+
+        assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_los_tres_mensajes_igual_se_guardan(self, repo):
+        """Debounce delays the REPLY, never the persistence."""
+        provider = FakeProvider()
+
+        await self._entra(provider, _event(body="Buenas"))
+        await self._entra(provider, _event(body="venden cubre carter?"))
+        await inbound_service.wait_for_pending()
+
+        assert len([m for m in repo.messages if m["direction"] == "inbound"]) == 2
+
+    async def test_un_tap_de_boton_responde_sin_esperar(self, repo):
+        """A tap is a complete thought -- making the customer wait for it is
+        latency with nothing bought."""
+        provider = FakeProvider()
+
+        await self._entra(provider, _event(reply_id="menu_horarios"))
+
+        assert provider.sent_text  # already sent, before wait_for_pending()
+
+    async def test_dos_conversaciones_no_se_cancelan_entre_si(self, repo):
+        provider = FakeProvider()
+
+        a = _event(body="hola")
+        b = a.model_copy(update={"chat_id": "50761112222@s.whatsapp.net"})
+        await self._entra(provider, a)
+        await self._entra(provider, b)
+        await inbound_service.wait_for_pending()
+
+        assert len(provider.sent) + len(provider.sent_text) == 2
+
+
+class TestTextoEnlatadoDeAnuncios:
+    """WhatsApp prefills a canned message when someone taps an ad's button.
+    It carries no information about what they want.
+
+    Measured on the pilot's traffic: 78 of 669 inbound messages (12%) are this
+    text. 70 arrive bare; in 8 the real question is appended to it. Of the bare
+    ones, 29% are followed by the real question within 25 seconds.
+
+    So it is NOT answered on sight -- that would reply before a third of
+    customers said what they wanted. It is stripped as noise, and the decision
+    is made on whatever is left. Nothing left means they only tapped the ad,
+    and the menu is the right answer.
+    """
+
+    def test_el_texto_enlatado_solo_no_deja_nada(self):
+        assert inbound_service._quitar_ruido("¡Hola! Quiero más información") == ""
+
+    def test_la_otra_variante_tambien(self):
+        texto = "¡Hola! Me gustaría conseguir más información sobre esto."
+
+        assert inbound_service._quitar_ruido(texto) == ""
+
+    def test_la_pregunta_pegada_al_enlatado_sobrevive(self):
+        """Captured verbatim from production."""
+        texto = "¡Hola! Quiero más información sobre cremallera para Nissan xtrail t30"
+
+        assert inbound_service._quitar_ruido(texto) == "sobre cremallera para Nissan xtrail t30"
+
+    def test_la_pregunta_en_otra_linea_sobrevive(self):
+        texto = "¡Hola! Quiero más información\nTendrán amortiguadores para un mazda 3 2016"
+
+        assert "amortiguadores" in inbound_service._quitar_ruido(texto)
+
+    def test_un_mensaje_normal_no_se_toca(self):
+        texto = "Cremallera para un hyundai elantra 2010 automatico"
+
+        assert inbound_service._quitar_ruido(texto) == texto
+
+    async def test_solo_el_enlatado_recibe_el_menu(self, repo):
+        provider = FakeProvider()
+
+        await entregar(provider, _event(body="¡Hola! Quiero más información"))
+
+        assert len(provider.sent) == 1
+
+    async def test_enlatado_mas_pregunta_decide_sobre_la_pregunta(self, repo):
+        """The canned prefix must not drown the real question in the burst."""
+        provider = FakeProvider()
+
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(body="¡Hola! Quiero más información")
+        )
+        await inbound_service.handle_inbound(
+            provider, organization_id=ORG, event=_event(body="cual es el horario?")
+        )
+        await inbound_service.wait_for_pending()
+
+        assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body

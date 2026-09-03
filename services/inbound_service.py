@@ -11,8 +11,10 @@ Two seams are deliberately marked and live nowhere else:
   2. the post-persist step order -- replying is step A.
 """
 
+import asyncio
 import logging
-from typing import Optional
+import unicodedata
+from typing import Dict, List, Optional
 
 from core.config import settings
 from integrations.messaging.base import MessagingProvider
@@ -29,6 +31,40 @@ logger = logging.getLogger(__name__)
 # Only this status means the bot owns the conversation. 'waiting', 'agent' and
 # 'resolved' all mean a human is involved, and the bot must not talk over them.
 BOT_OWNED_STATUS = "bot"
+
+# How long to wait for the customer to stop typing before answering.
+#
+# Measured on the pilot's first four days: 25% of inbound messages arrive
+# within 25s of the previous one in the same chat. People send one question as
+# several messages -- "Buenas" / "venden cubre carter?" / "Elantra 2011" -- and
+# answering each fragment means replying before they finished, three times.
+#
+# The cost is latency: the customer waits this long for an answer. Button taps
+# skip it entirely, since a tap is already a complete thought.
+DEBOUNCE_SECONDS: float = 25.0
+
+# Messages waiting to be answered, and the timer that will answer them.
+# In-process on purpose for now: a single Render instance, and a restart loses
+# only the pending REPLY -- every message is already persisted and replayable.
+# When that stops being acceptable, whatsapp_events.process_status is the queue
+# a real worker would read.
+_buffers: Dict[str, List[InboundMessage]] = {}
+_timers: Dict[str, asyncio.Task] = {}
+
+
+def _reset_debounce() -> None:
+    """Drop all pending state. For tests."""
+    for task in _timers.values():
+        task.cancel()
+    _timers.clear()
+    _buffers.clear()
+
+
+async def wait_for_pending() -> None:
+    """Await every scheduled reply. For tests."""
+    tasks = [t for t in _timers.values() if not t.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +97,11 @@ FLUJO: dict = {
             ("menu_agendar_cita", "Agendar cita"),
             ("menu_cotizacion", "Cotización"),
             ("menu_horarios", "Horarios y ubicación"),
+            ("menu_otro", "Otro"),
         ],
+        # Shown on the control that opens the list. With four options WhatsApp
+        # no longer renders buttons, and the adapter switches form on its own.
+        "list_label": "Ver opciones",
     },
     "menu_horarios": {
         # Los asteriscos son negrita en WhatsApp, no markdown nuestro.
@@ -87,6 +127,13 @@ FLUJO: dict = {
             "Un asesor te confirma en breve."
         ),
     },
+    "menu_otro": {
+        "mensaje": (
+            "Con gusto te ayudamos 🙌\n\n"
+            "Cuéntanos en qué te podemos servir y un asesor te responde "
+            "en horario de atención."
+        ),
+    },
     "menu_cotizacion": {
         "mensaje": (
             "Para cotizarte necesitamos 🛠️\n\n"
@@ -96,6 +143,73 @@ FLUJO: dict = {
         ),
     },
 }
+
+
+# Free text that unambiguously names a menu option routes straight to it.
+# Someone typing "cual es el horario" wants the answer, not a menu asking them
+# to pick it -- and every hit here is one fewer LLM call once the model lands.
+#
+# Deliberately narrow. Guessing wrong is worse than showing the menu: the
+# customer gets a confident answer to a question they did not ask.
+PALABRAS_CLAVE: dict = {
+    "menu_horarios": (
+        "horario",
+        "horarios",
+        "ubicacion",
+        "direccion",
+        "donde quedan",
+        "donde estan",
+        "como llego",
+        "abren",
+    ),
+}
+
+
+# Text WhatsApp prefills when someone taps the button on a Facebook/Instagram
+# ad. It says nothing about what the customer wants -- 12% of the pilot's
+# inbound traffic is this exact string.
+#
+# Stripped as noise rather than answered on sight: 29% of the people who send
+# it follow with their real question within 25 seconds, so replying to it would
+# be answering before they finished. What is left after stripping is what they
+# actually asked; nothing left means they only tapped the ad.
+RUIDO_DE_ANUNCIOS = (
+    "¡Hola! Me gustaría conseguir más información sobre esto.",
+    "¡Hola! Quiero más información",
+    "Hola! Quiero más información",
+)
+
+
+def _quitar_ruido(texto: str) -> str:
+    """Drop the ad's canned prefix, keeping whatever the customer added."""
+    limpio = texto
+    for enlatado in RUIDO_DE_ANUNCIOS:
+        if limpio.strip().startswith(enlatado):
+            limpio = limpio.strip()[len(enlatado):]
+            break
+    return limpio.strip()
+
+
+def _normalizar(texto: str) -> str:
+    """Lowercase and strip accents, so "ubicación" and "ubicacion" match.
+
+    People type both, and a bot that answers only the accented spelling looks
+    broken to whoever typed the other one.
+    """
+    sin_tildes = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in sin_tildes if unicodedata.category(c) != "Mn")
+
+
+def _nodo_por_palabra_clave(body: Optional[str]) -> Optional[str]:
+    """The node a free-text message names, if any."""
+    if not body:
+        return None
+
+    texto = _normalizar(body)
+    for nodo, palabras in PALABRAS_CLAVE.items():
+        if any(p in texto for p in palabras):
+            return nodo
+    return None
 
 
 def _node_to_message(node: dict, phone: str):
@@ -113,6 +227,7 @@ def _node_to_message(node: dict, phone: str):
         phone=phone,
         body=node["mensaje"],
         buttons=[OutboundButton(id=bid, title=titulo) for bid, titulo in botones],
+        list_label=node.get("list_label", "Ver opciones"),
     )
 
 
@@ -161,6 +276,15 @@ def _decide_reply(event: InboundMessage):
     if node is not None:
         return _node_to_message(node, event.from_phone)
 
+    # The ad's canned text carries no intent; deciding with it in the way only
+    # adds noise, and will do the same to the LLM's prompt later.
+    texto = _quitar_ruido(event.body or "")
+
+    por_palabra = _nodo_por_palabra_clave(texto)
+    if por_palabra is not None:
+        logger.info("Texto libre ruteado a %r por palabra clave", por_palabra)
+        return _node_to_message(FLUJO[por_palabra], event.from_phone)
+
     # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
     return _welcome_menu(event.from_phone)
 
@@ -207,10 +331,61 @@ async def handle_inbound(
         )
         return
 
-    reply = _decide_reply(event)
-    if reply is None:
+    # A tapped button is already a complete thought: waiting on it would be
+    # latency that buys nothing.
+    if event.reply_id:
+        reply = _decide_reply(event)
+        if reply is not None:
+            await _send_reply(provider, conversation_id, reply)
         return
 
+    _schedule_reply(provider, conversation_id, event)
+
+
+def _schedule_reply(
+    provider: MessagingProvider, conversation_id: str, event: InboundMessage
+) -> None:
+    """Buffer the message and (re)start this conversation's reply timer.
+
+    A newer message cancels the pending timer, so the burst is answered once,
+    after it ends, with everything the customer said.
+    """
+    _buffers.setdefault(conversation_id, []).append(event)
+
+    pendiente = _timers.pop(conversation_id, None)
+    if pendiente is not None:
+        pendiente.cancel()
+
+    _timers[conversation_id] = asyncio.create_task(
+        _reply_after_quiet(provider, conversation_id)
+    )
+
+
+async def _reply_after_quiet(provider: MessagingProvider, conversation_id: str) -> None:
+    """Wait out the quiet period, then answer the whole burst once."""
+    try:
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+    except asyncio.CancelledError:
+        return  # a newer message took over; it owns the reply now
+
+    eventos = _buffers.pop(conversation_id, [])
+    _timers.pop(conversation_id, None)
+    if not eventos:
+        return
+
+    # Decide on everything they said, not just the last line: someone who asks
+    # the schedule and then says "gracias" must be answered on the question.
+    combinado = eventos[-1].model_copy(
+        update={"body": "\n".join(e.body for e in eventos if e.body) or None}
+    )
+
+    reply = _decide_reply(combinado)
+    if reply is not None:
+        await _send_reply(provider, conversation_id, reply)
+
+
+async def _send_reply(provider: MessagingProvider, conversation_id: str, reply) -> None:
+    """Send one reply and record it. Never raises."""
     try:
         # A text node and a button node are different provider calls; sending a
         # buttonless message through send_interactive would be rejected.
@@ -219,7 +394,7 @@ async def handle_inbound(
         else:
             result = await provider.send_text(reply)
     except Exception:
-        logger.exception("Falló el envío de la respuesta a %s", event.from_phone)
+        logger.exception("Falló el envío de la respuesta a %s", reply.phone)
         return
 
     if not result.ok:

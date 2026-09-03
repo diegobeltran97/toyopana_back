@@ -6,7 +6,7 @@ package and should never leak into services or endpoints -- the mapper
 translates them to/from the provider-neutral schemas.messaging DTOs.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,8 +29,12 @@ class SendInteractiveWire(BaseModel):
     """
 
     to: str = Field(..., description="Chat id, e.g. 50761234567@s.whatsapp.net")
-    type: str = Field("button", description="Whapi's interactive message kind")
+    type: str = Field(..., description='"button" (<=3 options) or "list" (4-10)')
     body: Dict[str, str] = Field(..., description='{"text": "..."} prompt')
-    action: Dict[str, List[Dict[str, str]]] = Field(
-        ..., description='{"buttons": [{type, title, id}, ...]}'
+    action: Dict[str, Any] = Field(
+        ...,
+        description=(
+            'buttons: {"buttons": [{type, title, id}, ...]}; '
+            'list: {"list": {"label": ..., "sections": [{"rows": [...]}]}}'
+        ),
     )

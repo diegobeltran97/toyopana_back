@@ -86,7 +86,19 @@ class OutboundInteractive(BaseModel):
     """
 
     phone: str = Field(..., description="Recipient phone number (any human format)")
-    body: str = Field(..., min_length=1, description="The prompt shown above the buttons")
+    body: str = Field(..., min_length=1, description="The prompt shown above the options")
     buttons: List[OutboundButton] = Field(
-        ..., min_length=1, max_length=3, description="1-3 quick-reply buttons"
+        ...,
+        min_length=1,
+        max_length=10,
+        description=(
+            "1-10 options. WhatsApp renders up to 3 as quick-reply buttons and "
+            "4-10 as a list; picking between them is the adapter's job, not "
+            "the caller's."
+        ),
+    )
+    list_label: str = Field(
+        "Ver opciones",
+        max_length=20,
+        description="Text on the control that opens the list (4+ options only)",
     )
