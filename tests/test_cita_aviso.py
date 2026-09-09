@@ -13,7 +13,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+import uuid
+
 import services.cita_aviso as aviso
+from schemas.cita import CitaRead, CitaStatus
 from core.result import Result
 from schemas.messaging import SentMessage
 
@@ -266,3 +269,59 @@ class TestSolicitudSinClienteEnElCRM:
         await aviso.avisar_cambio_de_estado(provider, anterior="solicitada", cita=cita)
 
         assert provider.enviados[0].phone == "+50761112222"
+
+
+class TestElEstadoPuedeLlegarComoEnum:
+    """El endpoint pasa `cita.model_dump()`, que deja `status` como CitaStatus,
+    no como texto.
+
+    Bug real de producción: `str(CitaStatus.agendada)` da "CitaStatus.agendada",
+    la comparación con "agendada" fallaba, y el aviso se saltaba EN SILENCIO --
+    confirmar una cita en el panel no le llegaba a nadie y no aparecía ningún
+    error en los logs.
+
+    Los tests no lo vieron porque pasaban el estado como string literal.
+    """
+
+    def _cita_real(self, estado=CitaStatus.agendada):
+        """Un CitaRead volcado tal como lo hace el endpoint."""
+        return CitaRead(
+            id=uuid.uuid4(),
+            organization_id=uuid.uuid4(),
+            scheduled_at=datetime(2026, 9, 15, 13, 0, tzinfo=timezone.utc),
+            status=estado,
+            created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            solicitante_nombre="Diego Sastoque",
+            solicitante_telefono="+50768510658",
+        ).model_dump()
+
+    async def test_aceptar_avisa_aunque_el_estado_sea_un_enum(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada", cita=self._cita_real()
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_rechazar_tambien(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada",
+            cita=self._cita_real(CitaStatus.cancelada),
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_el_anterior_tambien_puede_ser_enum(self):
+        """update_cita devuelve el estado previo desde la fila; según de dónde
+        venga puede ser enum o texto."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior=CitaStatus.solicitada, cita=self._cita_real()
+        )
+
+        assert len(provider.enviados) == 1

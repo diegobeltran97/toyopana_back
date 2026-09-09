@@ -42,6 +42,18 @@ _MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
           "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 
+def _texto_de_estado(valor: Any) -> str:
+    """El estado como texto, venga como enum o como string.
+
+    `cita.model_dump()` deja `status` como CitaStatus, y `str(CitaStatus.agendada)`
+    da "CitaStatus.agendada". Comparar eso contra "agendada" falla, y el aviso se
+    saltaba EN SILENCIO: confirmar una cita no le llegaba a nadie y no aparecía
+    ningún error. Un fallo así solo se descubre cuando un cliente pregunta por
+    qué no le avisaron.
+    """
+    return str(getattr(valor, "value", valor) or "")
+
+
 def _cuando_legible(momento: datetime) -> str:
     """"viernes 15 de septiembre a las 8:00 a.m.", en hora del taller.
 
@@ -81,13 +93,14 @@ def _mensaje(nuevo_estado: str, nombre: str, cuando: str) -> Optional[str]:
 async def avisar_cambio_de_estado(
     provider: MessagingProvider,
     *,
-    anterior: str,
+    anterior: Any,
     cita: Dict[str, Any],
 ) -> None:
     """Avisa al cliente si el cambio de estado le concierne. Nunca lanza."""
-    nuevo = str(cita.get("status") or "")
+    nuevo = _texto_de_estado(cita.get("status"))
+    previo = _texto_de_estado(anterior)
 
-    if (anterior, nuevo) not in _AVISAR:
+    if (previo, nuevo) not in _AVISAR:
         return
 
     # El cliente del CRM manda cuando existe (cita creada en el panel); si no,
@@ -132,4 +145,4 @@ async def avisar_cambio_de_estado(
         )
         return
 
-    logger.info("Avisado el paso %s -> %s de la cita %s", anterior, nuevo, cita.get("id"))
+    logger.info("Avisado el paso %s -> %s de la cita %s", previo, nuevo, cita.get("id"))
