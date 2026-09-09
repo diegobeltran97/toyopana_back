@@ -95,7 +95,7 @@ async def create_cita(
     repo = repo or CitaRepository()
 
     payload: Dict[str, Any] = {
-        "customer_id": str(data.customer_id),
+        "customer_id": str(data.customer_id) if data.customer_id else None,
         "scheduled_at": data.scheduled_at.isoformat(),
         "service_type": data.service_type,
         # El estado viene del payload: la app crea 'agendada' (su default) y la
@@ -109,6 +109,10 @@ async def create_cita(
         payload["created_via"] = data.created_via
     if data.solicitud_texto is not None:
         payload["solicitud_texto"] = data.solicitud_texto
+    if data.solicitante_nombre is not None:
+        payload["solicitante_nombre"] = data.solicitante_nombre
+    if data.solicitante_telefono is not None:
+        payload["solicitante_telefono"] = data.solicitante_telefono
     row = await repo.create(organization_id, payload)
     cita = CitaRead.model_validate(row)
 

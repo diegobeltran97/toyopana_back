@@ -30,7 +30,10 @@ class CitaStatus(str, Enum):
 class CitaCreate(BaseModel):
     """Booking payload. The org comes from the JWT, never from the body."""
 
-    customer_id: uuid.UUID
+    # Opcional: una solicitud desde la agenda web no tiene ficha en el CRM
+    # todavía, y crearla ensuciaría el directorio con gente que quizá nunca
+    # aparezca. Entonces viajan `solicitante_*` en su lugar.
+    customer_id: Optional[uuid.UUID] = None
     scheduled_at: datetime
     service_type: Optional[str] = None
     service_type_id: Optional[uuid.UUID] = None
@@ -39,6 +42,9 @@ class CitaCreate(BaseModel):
     status: CitaStatus = CitaStatus.agendada
     created_via: Optional[str] = None
     solicitud_texto: Optional[str] = None
+    # Quién la pidió, mientras no sea todavía un cliente del CRM.
+    solicitante_nombre: Optional[str] = None
+    solicitante_telefono: Optional[str] = None
 
 
 class CitaUpdate(BaseModel):
@@ -63,7 +69,7 @@ class CitaRead(BaseModel):
 
     id: uuid.UUID
     organization_id: uuid.UUID
-    customer_id: uuid.UUID
+    customer_id: Optional[uuid.UUID] = None
     vehicle_id: Optional[uuid.UUID] = None
     scheduled_at: datetime
     service_type: Optional[str] = None
@@ -72,6 +78,8 @@ class CitaRead(BaseModel):
     service_type_id: Optional[uuid.UUID] = None
     created_via: Optional[str] = None
     solicitud_texto: Optional[str] = None
+    solicitante_nombre: Optional[str] = None
+    solicitante_telefono: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     customer: Optional[CitaCustomer] = None

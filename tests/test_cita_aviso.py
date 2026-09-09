@@ -211,3 +211,58 @@ class TestAllowlistDeTesting:
         )
 
         assert len(provider.enviados) == 1
+
+
+class TestSolicitudSinClienteEnElCRM:
+    """Una cita pedida por la web no tiene ficha: el teléfono está en la cita.
+
+    Si el aviso solo mirara `customer`, ninguna solicitud de la agenda recibiría
+    confirmación -- que es justamente el caso para el que existe.
+    """
+
+    def _solicitud(self, estado="agendada"):
+        return {
+            "id": "44444444-4444-4444-4444-444444444444",
+            "status": estado,
+            "scheduled_at": datetime(2026, 9, 15, 13, 0, tzinfo=timezone.utc),
+            "customer": None,
+            "solicitante_nombre": "Marta Rodríguez",
+            "solicitante_telefono": "+50768510658",
+        }
+
+    async def test_le_llega_el_aviso(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada", cita=self._solicitud()
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_va_al_telefono_que_dejo(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada", cita=self._solicitud()
+        )
+
+        assert provider.enviados[0].phone == "+50768510658"
+
+    async def test_la_saluda_por_el_nombre_que_escribio(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada", cita=self._solicitud()
+        )
+
+        assert "Marta" in provider.enviados[0].body
+
+    async def test_el_cliente_del_CRM_manda_cuando_existe(self):
+        """Una cita creada en el panel sí tiene ficha; esa es la fuente."""
+        provider = FakeProvider()
+        cita = {**self._solicitud(),
+                "customer": {"name": "Juan Pérez", "phone": "+50761112222"}}
+
+        await aviso.avisar_cambio_de_estado(provider, anterior="solicitada", cita=cita)
+
+        assert provider.enviados[0].phone == "+50761112222"

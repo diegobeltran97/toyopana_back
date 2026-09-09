@@ -90,8 +90,13 @@ async def avisar_cambio_de_estado(
     if (anterior, nuevo) not in _AVISAR:
         return
 
+    # El cliente del CRM manda cuando existe (cita creada en el panel); si no,
+    # los datos que la persona dejó en la agenda web. Sin este segundo caso
+    # ninguna solicitud recibiría confirmación, que es justo para lo que existe.
     cliente = cita.get("customer") or {}
-    telefono = cliente.get("phone")
+    telefono = cliente.get("phone") or cita.get("solicitante_telefono")
+    nombre_completo = cliente.get("name") or cita.get("solicitante_nombre") or ""
+
     if not telefono:
         # Un cliente sin teléfono cargado no tiene a dónde recibir el aviso.
         # No es un error: el taller lo verá igual en su calendario.
@@ -106,7 +111,7 @@ async def avisar_cambio_de_estado(
     try:
         cuerpo = _mensaje(
             nuevo,
-            (cliente.get("name") or "").split(" ")[0] or "",
+            nombre_completo.split(" ")[0],
             _cuando_legible(cita["scheduled_at"]),
         )
         if cuerpo is None:

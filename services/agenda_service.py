@@ -11,7 +11,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
 
 from repositories.business_rules import BusinessRulesRepository
-from services import citas_service, orders_service
+from services import citas_service
 from services.business_rules import (
     PANAMA,
     bloques_del_dia,
@@ -20,13 +20,26 @@ from services.business_rules import (
     resolver_dia,
 )
 from schemas.cita import CitaCreate, CitaRead, CitaStatus
-from schemas.customer import CustomerCreate
 
 logger = logging.getLogger(__name__)
 
-# El estado con el que nace una cita pedida por el cliente. El taller la revisa
-# y la acepta; hasta entonces no ocupa cupo.
-ESTADO_SOLICITADA = CitaStatus.solicitada.value
+# El indicativo de Panamá. Un celular local se teclea sin él ("68510658") y
+# Whapi necesita el número completo para entregar, así que se completa AQUÍ, al
+# guardar. Normalizarlo solo al enviar dejaría el dato a medias en la base y
+# haría que el aviso dependa de que alguien más se acuerde de completarlo.
+INDICATIVO = "507"
+
+
+def normalizar_telefono(telefono: str) -> str:
+    """Lo que la gente teclea -> E.164.
+
+    "6851-0658", "+507 6851 0658" y "50768510658" son el mismo número y todos
+    salen como "+50768510658".
+    """
+    digitos = "".join(filter(str.isdigit, telefono))
+    if not digitos.startswith(INDICATIVO):
+        digitos = INDICATIVO + digitos
+    return f"+{digitos}"
 
 
 async def disponibilidad(organization_id: str, dias: int) -> List[Dict[str, Any]]:
@@ -77,14 +90,11 @@ async def solicitar_cita(
     `organization_id` llega del token, jamás del cuerpo del request: es la
     única razón por la que esta ruta puede vivir sin sesión.
 
-    El cliente se resuelve por teléfono con find_or_create_customer, que es
-    idempotente: alguien que ya está en el CRM no se duplica, y alguien nuevo
-    queda registrado con lo que escribió.
+    NO crea un cliente. El CRM es de la gente que de verdad lleva su carro al
+    taller, cargada con el formulario; alguien que solo pidió una hora todavía
+    no es eso, y darle ficha llena el directorio de personas que quizá nunca
+    aparezcan. Nombre y teléfono viven en la propia cita hasta entonces.
     """
-    cliente = await orders_service.find_or_create_customer(
-        organization_id, CustomerCreate(name=nombre, phone=telefono)
-    )
-
     # La hora llega en local y scheduled_at es timestamptz: combinarla sin zona
     # correría la cita cinco horas.
     cuando = datetime.combine(fecha, hora, tzinfo=PANAMA)
@@ -92,8 +102,9 @@ async def solicitar_cita(
     return await citas_service.create_cita(
         organization_id,
         CitaCreate(
-            # find_or_create_customer devuelve un CustomerOut, no un dict.
-            customer_id=cliente.id,
+            # SIN customer_id: pedir una cita no crea un cliente en el CRM. El
+            # taller lo da de alta con el formulario el día que la persona
+            # aparezca con el carro.
             scheduled_at=cuando,
             service_type_id=service_type_id,
             # Nace como SOLICITUD, no como cita firme: es lo único que impide
@@ -102,6 +113,8 @@ async def solicitar_cita(
             created_via="bot",
             # Lo que el cliente escribió, tal cual. Después de aceptar la cita
             # el estado ya no dice de dónde vino ni quién la pidió.
-            solicitud_texto=f"Pedida por {nombre} ({telefono}) desde la agenda web",
+            solicitante_nombre=nombre,
+            solicitante_telefono=normalizar_telefono(telefono),
+            solicitud_texto="Pedida desde la agenda web",
         ),
     )

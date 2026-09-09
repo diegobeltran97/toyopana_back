@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 import api.v1.endpoints.agenda_publica as agenda
 import services.agenda_service as agenda_service_module
 from schemas.cita import CitaRead, CitaStatus
-from schemas.customer import CustomerOut
 from services.agenda_token import crear_token
 
 # La función real, capturada antes de que el fixture autouse la sustituya:
@@ -223,21 +222,7 @@ class TestNaceComoSolicitud:
                 updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
             )
 
-        async def fake_find_customer(org, data):
-            # CustomerOut, no dict: es lo que devuelve find_or_create_customer
-            # de verdad. Un doble que devuelve un dict hace pasar un servicio
-            # que en producción falla con "not subscriptable" -- ya pasó dos
-            # veces en este módulo.
-            return CustomerOut(
-                id=uuid.UUID(CUSTOMER),
-                name=data.name,
-                phone=data.phone,
-                created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
-            )
-
         monkeypatch.setattr(agenda_service_module.citas_service, "create_cita", fake_create)
-        monkeypatch.setattr(agenda_service_module.orders_service,
-                            "find_or_create_customer", fake_find_customer)
 
         await SOLICITAR_REAL(
             organization_id=ORG,
@@ -303,3 +288,64 @@ class TestTelefonoObligatorio:
     def test_acepta_el_formato_que_la_gente_escribe(self):
         for formato in ("6851-0658", "+507 6851 0658", "68510658", "507 6851-0658"):
             assert self._reservar(telefono=formato).status_code == 201, formato
+
+
+class TestNoEnsuciaElCRM:
+    """Pedir una cita por la web NO crea un cliente.
+
+    El CRM es de la gente que de verdad lleva su carro al taller, cargada con el
+    formulario. Alguien que solo pidió una hora todavía no es eso: crearle ficha
+    llena el directorio de personas que quizá nunca aparezcan, y deja al taller
+    sin distinguir clientes de interesados.
+
+    Pasó de verdad antes de este cambio -- quedaron dos fichas del mismo Diego
+    Sastoque, una del CRM y otra de una prueba de la agenda.
+    """
+
+    async def _crear(self, monkeypatch):
+        creadas = []
+
+        async def fake_create(org, data, repo=None):
+            creadas.append(data)
+            return CitaRead(
+                id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+                organization_id=uuid.UUID(ORG),
+                scheduled_at=data.scheduled_at,
+                status=data.status,
+                created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            )
+
+        monkeypatch.setattr(agenda_service_module.citas_service, "create_cita", fake_create)
+
+        await SOLICITAR_REAL(
+            organization_id=ORG, fecha=date(2026, 9, 15), hora=time(8),
+            nombre="Marta Rodríguez", telefono="6851-0658",
+        )
+        return creadas[0]
+
+    async def test_la_cita_no_lleva_cliente(self, monkeypatch):
+        cita = await self._crear(monkeypatch)
+
+        assert cita.customer_id is None
+
+    async def test_guarda_el_nombre_de_quien_la_pidio(self, monkeypatch):
+        cita = await self._crear(monkeypatch)
+
+        assert cita.solicitante_nombre == "Marta Rodríguez"
+
+    async def test_guarda_el_telefono_de_quien_la_pidio(self, monkeypatch):
+        """Es por donde el taller le confirma: sin él la cita no le llega a
+        nadie."""
+        cita = await self._crear(monkeypatch)
+
+        assert cita.solicitante_telefono is not None
+
+    async def test_el_telefono_se_guarda_con_codigo_de_pais(self, monkeypatch):
+        """"68510658" es el número; 507 es el indicativo. Whapi necesita los dos
+        para entregar el mensaje, así que se normaliza al guardar y no al
+        enviar -- guardarlo a medias hace que el aviso dependa de que alguien
+        más se acuerde de completarlo."""
+        cita = await self._crear(monkeypatch)
+
+        assert cita.solicitante_telefono == "+50768510658"
