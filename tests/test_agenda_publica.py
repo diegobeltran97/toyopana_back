@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 import api.v1.endpoints.agenda_publica as agenda
 import services.agenda_service as agenda_service_module
 from schemas.cita import CitaRead, CitaStatus
+from schemas.customer import CustomerOut
 from services.agenda_token import crear_token
 
 # La función real, capturada antes de que el fixture autouse la sustituya:
@@ -71,8 +72,8 @@ def _sin_db(monkeypatch):
     return llamadas
 
 
-def _token(org=ORG, customer=CUSTOMER, ttl=48):
-    return crear_token(org, customer, ttl_horas=ttl, secreto=SECRETO)
+def _token(org=ORG, ttl=48):
+    return crear_token(org, ttl_horas=ttl, secreto=SECRETO)
 
 
 class TestQuienPuedeEntrar:
@@ -111,25 +112,29 @@ class TestElTenantSaleDelToken:
 
         assert _sin_db[0][1] == ORG
 
-    def test_al_reservar_el_cliente_tambien_sale_del_token(self, _sin_db):
+    def test_el_cliente_se_identifica_en_la_pagina(self, _sin_db):
         client.post(
             f"/api/public/agenda/{_token()}/solicitar",
-            json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan Pérez"},
+            json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan Pérez",
+                  "telefono": "6851-0658"},
         )
 
         _, kwargs = _sin_db[-1]
         assert kwargs["organization_id"] == ORG
-        assert kwargs["customer_id"] == CUSTOMER
+        assert kwargs["nombre"] == "Juan Pérez"
+        assert kwargs["telefono"] == "6851-0658"
 
     def test_un_customer_id_en_el_cuerpo_se_ignora(self, _sin_db):
-        """Aceptarlo dejaría agendar a nombre de otra persona."""
+        """El cliente se resuelve por teléfono, no por un id que el cliente
+        mande: aceptarlo dejaría agendar en la ficha de otra persona."""
         client.post(
             f"/api/public/agenda/{_token()}/solicitar",
             json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan",
+                  "telefono": "6851-0658",
                   "customer_id": "44444444-4444-4444-4444-444444444444"},
         )
 
-        assert _sin_db[-1][1]["customer_id"] == CUSTOMER
+        assert "customer_id" not in _sin_db[-1][1]
 
 
 class TestVerDisponibilidad:
@@ -153,7 +158,8 @@ class TestVerDisponibilidad:
 
 class TestReservar:
     def _reservar(self, **extra):
-        cuerpo = {"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan Pérez"}
+        cuerpo = {"fecha": "2026-09-15", "hora": "08:00",
+                  "nombre": "Juan Pérez", "telefono": "6851-0658"}
         return client.post(f"/api/public/agenda/{_token()}/solicitar",
                            json={**cuerpo, **extra})
 
@@ -187,7 +193,8 @@ class TestReservar:
 
     def test_reservar_con_token_vencido_no_crea_nada(self, _sin_db):
         client.post(f"/api/public/agenda/{_token(ttl=-1)}/solicitar",
-                    json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan"})
+                    json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan",
+                  "telefono": "6851-0658"})
 
         assert _sin_db == []
 
@@ -216,11 +223,26 @@ class TestNaceComoSolicitud:
                 updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
             )
 
+        async def fake_find_customer(org, data):
+            # CustomerOut, no dict: es lo que devuelve find_or_create_customer
+            # de verdad. Un doble que devuelve un dict hace pasar un servicio
+            # que en producción falla con "not subscriptable" -- ya pasó dos
+            # veces en este módulo.
+            return CustomerOut(
+                id=uuid.UUID(CUSTOMER),
+                name=data.name,
+                phone=data.phone,
+                created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            )
+
         monkeypatch.setattr(agenda_service_module.citas_service, "create_cita", fake_create)
+        monkeypatch.setattr(agenda_service_module.orders_service,
+                            "find_or_create_customer", fake_find_customer)
 
         await SOLICITAR_REAL(
-            organization_id=ORG, customer_id=CUSTOMER,
-            fecha=date(2026, 9, 15), hora=time(8), nombre="Juan Pérez", **extra,
+            organization_id=ORG,
+            fecha=date(2026, 9, 15), hora=time(8),
+            nombre="Juan Pérez", telefono="6851-0658", **extra,
         )
         return creadas[0]
 
@@ -248,3 +270,36 @@ class TestNaceComoSolicitud:
         cita = await self._crear(monkeypatch)
 
         assert cita.service_type != "Juan Pérez"
+
+
+class TestTelefonoObligatorio:
+    """Sin cliente en el token, el teléfono es cómo le avisamos después.
+
+    Un link genérico no sabe a quién se lo mandaron: si la persona no deja un
+    teléfono, el taller puede aceptar la cita y no tener a dónde confirmarla.
+    """
+
+    def _reservar(self, **extra):
+        cuerpo = {"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan Pérez",
+                  "telefono": "6851-0658"}
+        cuerpo.update(extra)
+        return client.post(f"/api/public/agenda/{_token()}/solicitar", json=cuerpo)
+
+    def test_sin_telefono_no_se_acepta(self):
+        r = client.post(f"/api/public/agenda/{_token()}/solicitar",
+                        json={"fecha": "2026-09-15", "hora": "08:00", "nombre": "Juan"})
+
+        assert r.status_code == 422
+
+    def test_un_telefono_vacio_no_vale(self):
+        assert self._reservar(telefono="   ").status_code == 422
+
+    def test_un_telefono_incompleto_no_vale(self):
+        """"63343-23" son siete dígitos: no alcanza para un celular panameño, y
+        la confirmación va por WhatsApp. Es un caso real -- ese teléfono está
+        así en el CRM de producción."""
+        assert self._reservar(telefono="63343-23").status_code == 422
+
+    def test_acepta_el_formato_que_la_gente_escribe(self):
+        for formato in ("6851-0658", "+507 6851 0658", "68510658", "507 6851-0658"):
+            assert self._reservar(telefono=formato).status_code == 201, formato

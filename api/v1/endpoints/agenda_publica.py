@@ -1,15 +1,20 @@
 """Public booking page routes, mounted at /api/public/agenda.
 
-THE FIRST ROUTES IN THIS APPLICATION WITHOUT A SESSION. Everything about who is
-asking comes from the signed token in the path and from nowhere else:
+THE FIRST ROUTES IN THIS APPLICATION WITHOUT A SESSION.
 
-    organization_id  <- token
-    customer_id      <- token
+    organization_id  <- token, and ONLY the token
+    quién es          <- lo que la persona escribe en la página
 
-There is deliberately NO organization_id or customer_id parameter, not even an
-optional one. Accepting either would let anyone read another shop's
-availability or book in another customer's name — and an unused optional
-parameter is the kind of thing a later change quietly starts honouring.
+The link is generic: it carries no customer, so an employee can share one
+without first finding the person in the CRM — the common case, since someone
+writing from an unknown number has no record yet. Whoever opens it identifies
+themselves with name and phone, and find_or_create_customer (idempotent) does
+the rest.
+
+There is deliberately NO organization_id parameter, not even an optional one:
+accepting one would let anyone read another shop's availability. A customer_id
+in the body is likewise ignored — the customer is resolved by phone, not by an
+id the caller supplies.
 
 They live under /api/public/ so the routing table itself says which surface has
 no session, and nobody adds a route here by accident.
@@ -56,16 +61,19 @@ class AgendaOut(BaseModel):
 
 
 class SolicitudIn(BaseModel):
-    """Lo que el cliente elige en la pantalla.
+    """Lo que la persona llena en la pantalla.
 
-    No lleva organization_id ni customer_id a propósito: salen del token.
+    Sin organization_id a propósito: sale del token. Un customer_id extra en el
+    cuerpo se ignora — el cliente se resuelve por teléfono.
     """
 
     fecha: date
     hora: time
-    # Obligatorio: del token sale el teléfono, no el nombre. Si escribió desde
-    # un número que no teníamos, no sabemos quién es.
     nombre: str = Field(..., min_length=1, max_length=120)
+    # Obligatorio: el link es genérico, así que este es el único dato con el que
+    # después se le confirma la cita. Sin él el taller puede aceptarla y no
+    # tener a dónde avisar.
+    telefono: str = Field(..., min_length=1, max_length=40)
     service_type_id: Optional[str] = Field(
         None, description="Opcional: qué necesita el carro"
     )
@@ -77,6 +85,22 @@ class SolicitudIn(BaseModel):
         if not limpio:
             raise ValueError("El nombre no puede estar vacío")
         return limpio
+
+    @field_validator("telefono")
+    @classmethod
+    def _telefono_utilizable(cls, v: str) -> str:
+        """Al menos 8 dígitos: un celular panameño.
+
+        La gente escribe "6851-0658", "+507 6851 0658" o "68510658" y las tres
+        valen. Ocho y no siete porque la confirmación va por WhatsApp, y eso
+        exige un celular — un fijo (7 dígitos) nunca la recibiría. Un número
+        incompleto es una confirmación que no llega, y eso se descubre el día
+        que el cliente no aparece.
+        """
+        digitos = "".join(filter(str.isdigit, v))
+        if len(digitos) < 8:
+            raise ValueError("El teléfono no parece completo")
+        return v.strip()
 
 
 class SolicitudOut(BaseModel):
@@ -137,10 +161,10 @@ async def solicitar(
 
     cita = await agenda_service.solicitar_cita(
         organization_id=datos.organization_id,
-        customer_id=datos.customer_id,
         fecha=solicitud.fecha,
         hora=solicitud.hora,
         nombre=solicitud.nombre,
+        telefono=solicitud.telefono,
         service_type_id=solicitud.service_type_id,
     )
 

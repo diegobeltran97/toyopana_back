@@ -165,12 +165,6 @@ async def delete_cita(
     await citas_service.delete_cita(organization_id, cita_id)
 
 
-class LinkAgendaRequest(BaseModel):
-    """A qué cliente se le va a mandar el link."""
-
-    customer_id: str = Field(..., description="El cliente que va a agendar")
-
-
 class LinkAgendaResponse(BaseModel):
     """El link listo para copiar o mandar por WhatsApp."""
 
@@ -185,10 +179,14 @@ class LinkAgendaResponse(BaseModel):
     summary="Generar el link de agenda para un cliente",
 )
 async def generar_link_agenda(
-    payload: LinkAgendaRequest,
     current_user: dict = Depends(get_current_user),
 ) -> LinkAgendaResponse:
     """Arma el link firmado que el taller le manda al cliente por WhatsApp.
+
+    El link es GENÉRICO: no lleva cliente. El empleado lo comparte sin tener que
+    buscar antes a la persona en el CRM — que es el caso común, porque alguien
+    que escribe desde un número desconocido todavía no tiene ficha. Quien lo
+    abre se identifica con nombre y teléfono en la página.
 
     La organización sale del token del EMPLEADO y queda firmada dentro del link,
     así que un taller no puede emitir uno que agende en la agenda de otro.
@@ -205,7 +203,7 @@ async def generar_link_agenda(
             detail="Falta configurar AGENDA_TOKEN_SECRET para emitir links de agenda",
         )
 
-    token = crear_token(organization_id, payload.customer_id)
+    token = crear_token(organization_id)
     datos = leer_token(token)
 
     return LinkAgendaResponse(

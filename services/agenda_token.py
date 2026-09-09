@@ -1,15 +1,21 @@
 """The signed link that lets a customer book without logging in.
 
 This is the whole access-control story of the public booking page: the token
-says WHICH organization and WHICH customer, and both are signed. A caller who
-could forge one, or edit the organization inside it, would be booking in
-someone else's shop and reading their availability.
+says WHICH organization, signed. A caller who could forge one, or edit the
+organization inside it, would be booking in someone else's shop and reading
+their availability.
 
-Two rules that the rest of the code depends on:
+The link carries NO customer: it is generic, and whoever opens it says who they
+are on the page (name and phone are required there). That is what lets an
+employee share one link without first finding the person in the CRM -- which is
+the common case, because someone writing from an unknown number has no record
+yet.
 
-  * `organization_id` and `customer_id` come from HERE and from nowhere else.
-    The public endpoints never accept them as parameters -- same rule that
-    governs the bot's tools.
+Two rules the rest of the code depends on:
+
+  * `organization_id` comes from HERE and from nowhere else. The public
+    endpoints never accept it as a parameter -- same rule that governs the
+    bot's tools.
   * It expires. A link shared in a WhatsApp group should not still work in a
     month.
 
@@ -46,7 +52,6 @@ class DatosToken:
     """Lo que un token válido afirma."""
 
     organization_id: str
-    customer_id: str
     expira_en: int  # epoch en segundos
 
 
@@ -78,7 +83,6 @@ def _secreto_activo(secreto: Optional[str]) -> str:
 
 def crear_token(
     organization_id: str,
-    customer_id: str,
     ttl_horas: int = TTL_HORAS_DEFAULT,
     secreto: Optional[str] = None,
 ) -> str:
@@ -89,7 +93,6 @@ def crear_token(
         json.dumps(
             {
                 "o": organization_id,
-                "c": customer_id,
                 "e": int(time.time()) + ttl_horas * 3600,
             },
             separators=(",", ":"),
@@ -122,15 +125,11 @@ def leer_token(token: str, secreto: Optional[str] = None) -> DatosToken:
 
     try:
         datos = json.loads(_de_b64(cuerpo))
-        organization_id, customer_id, expira = datos["o"], datos["c"], int(datos["e"])
+        organization_id, expira = datos["o"], int(datos["e"])
     except Exception:
         raise TokenInvalido("Contenido de token inválido")
 
     if expira <= int(time.time()):
         raise TokenVencido("El link ya venció")
 
-    return DatosToken(
-        organization_id=organization_id,
-        customer_id=customer_id,
-        expira_en=expira,
-    )
+    return DatosToken(organization_id=organization_id, expira_en=expira)

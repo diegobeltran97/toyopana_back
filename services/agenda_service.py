@@ -11,7 +11,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
 
 from repositories.business_rules import BusinessRulesRepository
-from services import citas_service
+from services import citas_service, orders_service
 from services.business_rules import (
     PANAMA,
     bloques_del_dia,
@@ -20,6 +20,7 @@ from services.business_rules import (
     resolver_dia,
 )
 from schemas.cita import CitaCreate, CitaRead, CitaStatus
+from schemas.customer import CustomerCreate
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +66,25 @@ async def disponibilidad(organization_id: str, dias: int) -> List[Dict[str, Any]
 async def solicitar_cita(
     *,
     organization_id: str,
-    customer_id: str,
     fecha: date,
     hora: time,
     nombre: str,
+    telefono: str,
     service_type_id: Optional[str] = None,
 ) -> CitaRead:
-    """Registra la solicitud del cliente. Nunca crea una cita confirmada.
+    """Registra la solicitud. Nunca crea una cita confirmada.
 
-    `organization_id` y `customer_id` llegan del token, jamás del cuerpo del
-    request: son la única razón por la que esta ruta puede vivir sin sesión.
+    `organization_id` llega del token, jamás del cuerpo del request: es la
+    única razón por la que esta ruta puede vivir sin sesión.
+
+    El cliente se resuelve por teléfono con find_or_create_customer, que es
+    idempotente: alguien que ya está en el CRM no se duplica, y alguien nuevo
+    queda registrado con lo que escribió.
     """
+    cliente = await orders_service.find_or_create_customer(
+        organization_id, CustomerCreate(name=nombre, phone=telefono)
+    )
+
     # La hora llega en local y scheduled_at es timestamptz: combinarla sin zona
     # correría la cita cinco horas.
     cuando = datetime.combine(fecha, hora, tzinfo=PANAMA)
@@ -83,7 +92,8 @@ async def solicitar_cita(
     return await citas_service.create_cita(
         organization_id,
         CitaCreate(
-            customer_id=customer_id,
+            # find_or_create_customer devuelve un CustomerOut, no un dict.
+            customer_id=cliente.id,
             scheduled_at=cuando,
             service_type_id=service_type_id,
             # Nace como SOLICITUD, no como cita firme: es lo único que impide
@@ -92,6 +102,6 @@ async def solicitar_cita(
             created_via="bot",
             # Lo que el cliente escribió, tal cual. Después de aceptar la cita
             # el estado ya no dice de dónde vino ni quién la pidió.
-            solicitud_texto=f"Pedida por {nombre} desde la agenda web",
+            solicitud_texto=f"Pedida por {nombre} ({telefono}) desde la agenda web",
         ),
     )

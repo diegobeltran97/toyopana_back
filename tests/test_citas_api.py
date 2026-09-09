@@ -299,21 +299,24 @@ class TestGenerarLinkDeAgenda:
         monkeypatch.setattr(citas_endpoint.settings, "AGENDA_BASE_URL",
                             "https://toyopana.app", raising=False)
 
-    def _pedir(self, customer_id=CUSTOMER_ID):
-        return client.post("/api/citas/link-agenda", json={"customer_id": customer_id})
+    def _pedir(self):
+        return client.post("/api/citas/link-agenda")
 
     def test_devuelve_un_link_completo(self):
         url = self._pedir().json()["url"]
 
         assert url.startswith("https://toyopana.app/agenda/")
 
-    def test_el_link_lleva_un_token_que_se_puede_verificar(self):
-        from services.agenda_token import leer_token
+    def test_el_link_no_lleva_cliente(self):
+        """Genérico a propósito: el empleado lo comparte sin buscar antes a la
+        persona, y quien lo abre se identifica en la página."""
+        from services.agenda_token import DatosToken, leer_token
 
         url = self._pedir().json()["url"]
         token = url.rsplit("/", 1)[1]
 
-        assert leer_token(token, secreto="secreto-de-prueba").customer_id == CUSTOMER_ID
+        assert not hasattr(leer_token(token, secreto="secreto-de-prueba"),
+                           "customer_id")
 
     def test_el_token_lleva_la_organizacion_del_empleado(self):
         """Un taller no puede emitir un link que agende en la agenda de otro."""
