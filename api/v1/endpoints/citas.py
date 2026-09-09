@@ -200,7 +200,12 @@ async def generar_link_agenda(
     if not settings.AGENDA_TOKEN_SECRET:
         raise HTTPException(
             status_code=503,
-            detail="Falta configurar AGENDA_TOKEN_SECRET para emitir links de agenda",
+            # Lo lee alguien en una pantalla, no en un log: dice qué falta y
+            # dónde, sin jerga.
+            detail=(
+                "Los links de agenda no están habilitados todavía. "
+                "Falta configurar AGENDA_TOKEN_SECRET en el servidor."
+            ),
         )
 
     token = crear_token(organization_id)
