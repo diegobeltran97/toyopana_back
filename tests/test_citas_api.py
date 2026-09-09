@@ -344,3 +344,68 @@ class TestGenerarLinkDeAgenda:
                             raising=False)
 
         assert self._pedir().status_code == 503
+
+
+class TestElAvisoLlegaPorElEndpointCompleto:
+    """Confirmar por la ruta HTTP realmente manda el mensaje.
+
+    La otra clase sustituye `avisar_cambio_de_estado` y solo comprueba que se
+    agenda la tarea. Eso dejó pasar el bug del enum: la tarea se agendaba con
+    los argumentos correctos y la función real retornaba sin enviar.
+
+    Aquí corre la función DE VERDAD, con un proveedor falso. Es el tramo que
+    faltaba: endpoint -> BackgroundTask -> aviso -> proveedor.
+    """
+
+    @pytest.fixture
+    def proveedor(self, monkeypatch):
+        enviados = []
+
+        class FakeProvider:
+            async def send_text(self, msg):
+                enviados.append(msg)
+                from core.result import Result
+                from schemas.messaging import SentMessage
+                return Result.success(SentMessage(id="m1", to=msg.phone, status="sent"))
+
+        app.dependency_overrides[citas_endpoint.get_messaging_provider] = (
+            lambda: FakeProvider()
+        )
+        monkeypatch.setattr(citas_endpoint.settings, "WHATSAPP_ALLOWED_NUMBERS", "",
+                            raising=False)
+        yield enviados
+        app.dependency_overrides.pop(citas_endpoint.get_messaging_provider, None)
+
+    def _confirmar(self, monkeypatch, anterior="solicitada"):
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=data.status)
+
+        async def fake_get(org, cita_id):
+            return {"status": anterior}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        return client.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+    def test_confirmar_envia_el_mensaje(self, monkeypatch, proveedor):
+        r = self._confirmar(monkeypatch)
+
+        assert r.status_code == 200
+        assert len(proveedor) == 1
+
+    def test_el_mensaje_va_al_telefono_del_cliente(self, monkeypatch, proveedor):
+        self._confirmar(monkeypatch)
+
+        assert proveedor[0].phone == "+50761234567"
+
+    def test_el_mensaje_dice_que_quedo_confirmada(self, monkeypatch, proveedor):
+        self._confirmar(monkeypatch)
+
+        assert "onfirmada" in proveedor[0].body
+
+    def test_un_cambio_interno_no_envia_nada(self, monkeypatch, proveedor):
+        """agendada -> confirmada es trabajo del taller, no del cliente."""
+        self._confirmar(monkeypatch, anterior="agendada")
+
+        assert proveedor == []
