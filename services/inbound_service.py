@@ -18,6 +18,8 @@ from typing import Dict, List, Optional
 
 from core.config import settings
 from integrations.messaging.base import MessagingProvider
+from repositories.business_rules import BusinessRulesRepository
+from services.business_rules import texto_de_horario
 from repositories.conversations import (
     record_message,
     touch_last_inbound,
@@ -104,12 +106,10 @@ FLUJO: dict = {
         "list_label": "Ver opciones",
     },
     "menu_horarios": {
+        # SIN horario quemado: lo antepone _mensaje_de_horarios() leyendo
+        # business_hours. Dos copias del mismo dato es una que se queda vieja.
         # Los asteriscos son negrita en WhatsApp, no markdown nuestro.
         "mensaje": (
-            "🕐 *Horario de atención*\n"
-            "Lunes a viernes: 8:00 a.m. – 5:00 p.m.\n"
-            "Sábados: 8:00 a.m. – 3:00 p.m.\n"
-            "Domingos: cerrado\n\n"
             "📍 *Cómo llegar*\n"
             "Vía Fernández de Córdoba, Vista Hermosa.\n"
             "Plaza Toledo, Local #6 — busca el aviso en letras verdes "
@@ -212,6 +212,36 @@ def _nodo_por_palabra_clave(body: Optional[str]) -> Optional[str]:
     return None
 
 
+async def leer_texto_de_horario(organization_id: str) -> str:
+    """El horario de atención del taller, como texto, desde business_hours.
+
+    Aislado en su propia función para que el nodo no sepa de repositorios y
+    para que los tests puedan sustituirlo sin tocar la red.
+    """
+    repo = BusinessRulesRepository()
+    return texto_de_horario(await repo.semana(organization_id))
+
+
+async def _mensaje_de_horarios(organization_id: str, phone: str) -> OutboundMessage:
+    """El nodo de horarios, con el horario real antepuesto a la dirección.
+
+    Una caída de la base no puede dejar al cliente sin respuesta: en ese caso
+    se manda la dirección sola, que es mejor que el silencio.
+    """
+    cuerpo = FLUJO["menu_horarios"]["mensaje"]
+
+    try:
+        horario = await leer_texto_de_horario(organization_id)
+    except Exception:
+        logger.exception("No se pudo leer el horario; se responde sin esa sección")
+        horario = ""
+
+    if horario:
+        cuerpo = f"🕐 *Horario de atención*\n{horario}\n\n{cuerpo}"
+
+    return OutboundMessage(phone=phone, body=cuerpo)
+
+
 def _node_to_message(node: dict, phone: str):
     """A tree node -> the outbound DTO its shape calls for.
 
@@ -262,7 +292,7 @@ def _is_reply_allowed(phone: str) -> bool:
     return _only_digits(phone) in allowed
 
 
-def _decide_reply(event: InboundMessage):
+async def _decide_reply(organization_id: str, event: InboundMessage):
     """Decide what to answer (SEAM).
 
     1. A tapped button routes through the tree. Deterministic, costs nothing,
@@ -272,7 +302,11 @@ def _decide_reply(event: InboundMessage):
        menu. THIS is where the DecisionEngine (Claude) goes: the fallback is
        the seam, not a dead end.
     """
-    node = FLUJO.get(event.reply_id or "")
+    nodo_id = event.reply_id or ""
+    if nodo_id == "menu_horarios":
+        return await _mensaje_de_horarios(organization_id, event.from_phone)
+
+    node = FLUJO.get(nodo_id)
     if node is not None:
         return _node_to_message(node, event.from_phone)
 
@@ -283,6 +317,8 @@ def _decide_reply(event: InboundMessage):
     por_palabra = _nodo_por_palabra_clave(texto)
     if por_palabra is not None:
         logger.info("Texto libre ruteado a %r por palabra clave", por_palabra)
+        if por_palabra == "menu_horarios":
+            return await _mensaje_de_horarios(organization_id, event.from_phone)
         return _node_to_message(FLUJO[por_palabra], event.from_phone)
 
     # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
@@ -334,16 +370,19 @@ async def handle_inbound(
     # A tapped button is already a complete thought: waiting on it would be
     # latency that buys nothing.
     if event.reply_id:
-        reply = _decide_reply(event)
+        reply = await _decide_reply(organization_id, event)
         if reply is not None:
             await _send_reply(provider, conversation_id, reply)
         return
 
-    _schedule_reply(provider, conversation_id, event)
+    _schedule_reply(provider, organization_id, conversation_id, event)
 
 
 def _schedule_reply(
-    provider: MessagingProvider, conversation_id: str, event: InboundMessage
+    provider: MessagingProvider,
+    organization_id: str,
+    conversation_id: str,
+    event: InboundMessage,
 ) -> None:
     """Buffer the message and (re)start this conversation's reply timer.
 
@@ -357,11 +396,13 @@ def _schedule_reply(
         pendiente.cancel()
 
     _timers[conversation_id] = asyncio.create_task(
-        _reply_after_quiet(provider, conversation_id)
+        _reply_after_quiet(provider, organization_id, conversation_id)
     )
 
 
-async def _reply_after_quiet(provider: MessagingProvider, conversation_id: str) -> None:
+async def _reply_after_quiet(
+    provider: MessagingProvider, organization_id: str, conversation_id: str
+) -> None:
     """Wait out the quiet period, then answer the whole burst once."""
     try:
         await asyncio.sleep(DEBOUNCE_SECONDS)
@@ -379,7 +420,7 @@ async def _reply_after_quiet(provider: MessagingProvider, conversation_id: str) 
         update={"body": "\n".join(e.body for e in eventos if e.body) or None}
     )
 
-    reply = _decide_reply(combinado)
+    reply = await _decide_reply(organization_id, combinado)
     if reply is not None:
         await _send_reply(provider, conversation_id, reply)
 

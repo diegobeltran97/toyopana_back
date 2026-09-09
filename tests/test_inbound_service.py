@@ -51,6 +51,20 @@ async def entregar(provider, event, org=ORG):
 
 
 @pytest.fixture(autouse=True)
+def _sin_red(monkeypatch):
+    """Ningún test de este módulo sale a la red.
+
+    El nodo de horarios lee business_hours desde Supabase, y `app/.env` apunta
+    a PRODUCCIÓN: sin este stub cada test hace una consulta real. Las clases que
+    prueban el horario sustituyen esto con su propio valor.
+    """
+    async def horario_de_prueba(_org):
+        return "Lunes a viernes: 8:00 a.m. – 5:00 p.m.\nSábados: 8:00 a.m. – 3:00 p.m."
+
+    monkeypatch.setattr(inbound_service, "leer_texto_de_horario", horario_de_prueba)
+
+
+@pytest.fixture(autouse=True)
 def _debounce_corto(monkeypatch):
     """Keep the suite fast, and never leave a timer running between tests."""
     monkeypatch.setattr(inbound_service, "DEBOUNCE_SECONDS", 0.05)
@@ -533,5 +547,62 @@ class TestTextoEnlatadoDeAnuncios:
             provider, organization_id=ORG, event=_event(body="cual es el horario?")
         )
         await inbound_service.wait_for_pending()
+
+        assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
+
+
+class TestHorarioDesdeLaTabla:
+    """El mensaje de horarios sale de business_hours, no de texto quemado.
+
+    Cierra el riesgo de las dos fuentes: antes el horario estaba escrito a mano
+    en este nodo Y en la tabla contra la que se validan las citas. El taller
+    cambiaba su sábado en ajustes y el bot seguía diciendo la hora vieja.
+    """
+
+    @pytest.fixture
+    def horario(self, monkeypatch):
+        """Reemplaza la lectura de la tabla por un horario controlado."""
+        def _set(texto):
+            async def fake(_org):
+                return texto
+            monkeypatch.setattr(inbound_service, "leer_texto_de_horario", fake)
+        return _set
+
+    async def test_el_mensaje_usa_el_horario_de_la_tabla(self, repo, horario):
+        horario("Lunes a viernes: 8:00 a.m. – 5:00 p.m.\nSábados: 8:00 a.m. – 1:00 p.m.")
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_horarios"))
+
+        assert "1:00 p.m." in provider.sent_text[0].body
+
+    async def test_no_queda_horario_quemado_en_el_mensaje(self, repo, horario):
+        """Si el texto fijo siguiera ahí, el mensaje traería las dos versiones."""
+        horario("Lunes a viernes: 9:00 a.m. – 6:00 p.m.")
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_horarios"))
+
+        assert "5:00 p.m." not in provider.sent_text[0].body
+
+    async def test_la_direccion_sigue_apareciendo(self, repo, horario):
+        """El horario sale de la tabla; la dirección todavía no, y no debe
+        perderse en el cambio."""
+        horario("Lunes a viernes: 8:00 a.m. – 5:00 p.m.")
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_horarios"))
+
+        assert "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_si_falla_la_lectura_el_bot_igual_responde(self, repo, monkeypatch):
+        """Una caída de Supabase no puede dejar al cliente sin respuesta: el
+        mensaje sale sin la sección de horario, con la dirección."""
+        async def explota(_org):
+            raise RuntimeError("supabase caída")
+        monkeypatch.setattr(inbound_service, "leer_texto_de_horario", explota)
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_horarios"))
 
         assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
