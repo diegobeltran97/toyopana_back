@@ -19,7 +19,7 @@ from services.business_rules import (
     ocupacion_de_citas,
     resolver_dia,
 )
-from schemas.cita import CitaCreate, CitaStatus
+from schemas.cita import CitaCreate, CitaRead, CitaStatus
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ async def solicitar_cita(
     hora: time,
     nombre: str,
     service_type_id: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> CitaRead:
     """Registra la solicitud del cliente. Nunca crea una cita confirmada.
 
     `organization_id` y `customer_id` llegan del token, jamás del cuerpo del

@@ -7,7 +7,8 @@ one, and above all a caller trying to name someone else's organization.
 The service layer is monkeypatched; nothing here reaches the network.
 """
 
-from datetime import date, time
+import uuid
+from datetime import date, datetime, time, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import api.v1.endpoints.agenda_publica as agenda
 import services.agenda_service as agenda_service_module
+from schemas.cita import CitaRead, CitaStatus
 from services.agenda_token import crear_token
 
 # La función real, capturada antes de que el fixture autouse la sustituya:
@@ -51,8 +53,18 @@ def _sin_db(monkeypatch):
 
     async def fake_solicitar(**kwargs):
         llamadas.append(("solicitar", kwargs))
-        return {"id": "33333333-3333-3333-3333-333333333333",
-                "scheduled_at": "2026-09-15T13:00:00+00:00", "status": "solicitada"}
+        # CitaRead, no dict: es lo que devuelve create_cita de verdad. Un doble
+        # que devuelve un dict hace pasar un endpoint que en producción falla
+        # con "'CitaRead' object is not subscriptable".
+        return CitaRead(
+            id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+            organization_id=uuid.UUID(ORG),
+            customer_id=uuid.UUID(CUSTOMER),
+            scheduled_at=datetime(2026, 9, 15, 13, 0, tzinfo=timezone.utc),
+            status=CitaStatus.solicitada,
+            created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        )
 
     monkeypatch.setattr(agenda.agenda_service, "disponibilidad", fake_disponibilidad)
     monkeypatch.setattr(agenda.agenda_service, "solicitar_cita", fake_solicitar)
@@ -194,9 +206,15 @@ class TestNaceComoSolicitud:
 
         async def fake_create(org, data, repo=None):
             creadas.append(data)
-            return {"id": "33333333-3333-3333-3333-333333333333",
-                    "scheduled_at": "2026-09-15T13:00:00+00:00",
-                    "status": data.status.value}
+            return CitaRead(
+                id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+                organization_id=uuid.UUID(ORG),
+                customer_id=data.customer_id,
+                scheduled_at=data.scheduled_at,
+                status=data.status,
+                created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            )
 
         monkeypatch.setattr(agenda_service_module.citas_service, "create_cita", fake_create)
 

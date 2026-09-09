@@ -144,8 +144,9 @@ async def solicitar(
         service_type_id=solicitud.service_type_id,
     )
 
+    # create_cita devuelve un CitaRead, no un dict: acceso por atributo.
     return SolicitudOut(
-        id=str(cita["id"]),
-        scheduled_at=str(cita["scheduled_at"]),
-        status=str(cita.get("status", agenda_service.ESTADO_SOLICITADA)),
+        id=str(cita.id),
+        scheduled_at=cita.scheduled_at.isoformat(),
+        status=cita.status.value,
     )
