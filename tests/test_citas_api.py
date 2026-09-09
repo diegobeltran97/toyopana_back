@@ -282,3 +282,62 @@ class TestAvisoAlCliente:
         r = sin_relanzar.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
 
         assert r.status_code == 200
+
+
+class TestGenerarLinkDeAgenda:
+    """El taller genera el link que le manda al cliente por WhatsApp.
+
+    Autenticado y con la organización tomada del token del EMPLEADO: el link
+    que sale lleva firmada esa organización, así que un taller no puede emitir
+    un link que agende en la agenda de otro.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch):
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_TOKEN_SECRET",
+                            "secreto-de-prueba", raising=False)
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_BASE_URL",
+                            "https://toyopana.app", raising=False)
+
+    def _pedir(self, customer_id=CUSTOMER_ID):
+        return client.post("/api/citas/link-agenda", json={"customer_id": customer_id})
+
+    def test_devuelve_un_link_completo(self):
+        url = self._pedir().json()["url"]
+
+        assert url.startswith("https://toyopana.app/agenda/")
+
+    def test_el_link_lleva_un_token_que_se_puede_verificar(self):
+        from services.agenda_token import leer_token
+
+        url = self._pedir().json()["url"]
+        token = url.rsplit("/", 1)[1]
+
+        assert leer_token(token, secreto="secreto-de-prueba").customer_id == CUSTOMER_ID
+
+    def test_el_token_lleva_la_organizacion_del_empleado(self):
+        """Un taller no puede emitir un link que agende en la agenda de otro."""
+        from services.agenda_token import leer_token
+
+        url = self._pedir().json()["url"]
+        token = url.rsplit("/", 1)[1]
+
+        assert leer_token(token, secreto="secreto-de-prueba").organization_id == ORG
+
+    def test_dice_cuando_vence(self):
+        """La pantalla lo muestra para que el empleado sepa si vale la pena
+        reenviar el mismo link o pedir uno nuevo."""
+        assert "expira_en" in self._pedir().json()
+
+    def test_sin_sesion_no_se_generan_links(self):
+        app.dependency_overrides.clear()
+
+        assert self._pedir().status_code == 401
+
+    def test_sin_secreto_configurado_falla_claro(self, monkeypatch):
+        """Falla cerrado y con un mensaje que dice qué configurar, en vez de
+        emitir un link que nadie va a poder abrir."""
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_TOKEN_SECRET", "",
+                            raising=False)
+
+        assert self._pedir().status_code == 503

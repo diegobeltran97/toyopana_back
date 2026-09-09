@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Vacío = no se pueden emitir ni verificar links: falla cerrado, para que un
     # .env incompleto nunca se lea como "sin firma".
     AGENDA_TOKEN_SECRET: str = ""
+    # Dónde vive la página pública de agenda. El link que el taller le manda al
+    # cliente se arma con esto, así que en producción apunta al dominio real.
+    AGENDA_BASE_URL: str = "http://localhost:3000"
     ENVIRONMENT: str = "development"  # Optional with default
 
     class Config:

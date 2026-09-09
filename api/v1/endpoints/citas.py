@@ -19,7 +19,11 @@ from fastapi import (
     status,
 )
 
+from pydantic import BaseModel, Field
+
 from api.deps import get_current_user
+from core.config import settings
+from services.agenda_token import TTL_HORAS_DEFAULT, crear_token, leer_token
 from integrations.messaging.base import MessagingProvider
 from integrations.messaging.factory import get_messaging_provider
 from services.cita_aviso import avisar_cambio_de_estado
@@ -159,3 +163,53 @@ async def delete_cita(
     """
     organization_id = require_organization_id(current_user)
     await citas_service.delete_cita(organization_id, cita_id)
+
+
+class LinkAgendaRequest(BaseModel):
+    """A qué cliente se le va a mandar el link."""
+
+    customer_id: str = Field(..., description="El cliente que va a agendar")
+
+
+class LinkAgendaResponse(BaseModel):
+    """El link listo para copiar o mandar por WhatsApp."""
+
+    url: str
+    expira_en: int = Field(..., description="Epoch en segundos")
+    horas_de_vigencia: int
+
+
+@router.post(
+    "/link-agenda",
+    response_model=LinkAgendaResponse,
+    summary="Generar el link de agenda para un cliente",
+)
+async def generar_link_agenda(
+    payload: LinkAgendaRequest,
+    current_user: dict = Depends(get_current_user),
+) -> LinkAgendaResponse:
+    """Arma el link firmado que el taller le manda al cliente por WhatsApp.
+
+    La organización sale del token del EMPLEADO y queda firmada dentro del link,
+    así que un taller no puede emitir uno que agende en la agenda de otro.
+
+    Sin AGENDA_TOKEN_SECRET responde 503 en vez de emitir un link que nadie
+    podría abrir: un error claro aquí ahorra la confusión de un cliente que
+    recibe un link muerto.
+    """
+    organization_id = require_organization_id(current_user)
+
+    if not settings.AGENDA_TOKEN_SECRET:
+        raise HTTPException(
+            status_code=503,
+            detail="Falta configurar AGENDA_TOKEN_SECRET para emitir links de agenda",
+        )
+
+    token = crear_token(organization_id, payload.customer_id)
+    datos = leer_token(token)
+
+    return LinkAgendaResponse(
+        url=f"{settings.AGENDA_BASE_URL.rstrip('/')}/agenda/{token}",
+        expira_en=datos.expira_en,
+        horas_de_vigencia=TTL_HORAS_DEFAULT,
+    )
