@@ -1,10 +1,26 @@
 import logging
 import httpx
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import HTTPException
 from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_content_range_total(header: Optional[str], fallback: int) -> int:
+    """
+    Pull the total row count out of a PostgREST `Content-Range` header.
+
+    The header looks like `0-19/193`, or `*/0` for an empty result. PostgREST
+    only sends it when the request asked for a count, and reports `*` for the
+    total when it can't determine one — fall back to the rows we did get so a
+    missing or unparseable header degrades to the pre-count behaviour instead
+    of raising.
+    """
+    if not header or "/" not in header:
+        return fallback
+    total = header.rsplit("/", 1)[1].strip()
+    return int(total) if total.isdigit() else fallback
 
 
 class CustomerRepository:
@@ -119,13 +135,18 @@ class CustomerRepository:
         search: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], int]:
         """
         List customers within an organization with an embedded order count.
 
         Uses PostgREST embedded resource count (`orders(count)`) so the
         directory's "visitas" figure is computed in the same round trip as
         the customer rows, rather than N+1 queries.
+
+        `Prefer: count=exact` asks PostgREST for the total number of matching
+        rows, which comes back in the `Content-Range` header (`0-19/193`). A
+        paginated caller needs that total to know how many pages exist, and it
+        costs the same round trip.
 
         Args:
             organization_id: The organization UUID
@@ -134,7 +155,8 @@ class CustomerRepository:
             offset: Pagination offset
 
         Returns:
-            A list of customer dicts, each with an `orders: [{"count": N}]` key.
+            A `(rows, total)` pair, where each row has an `orders: [{"count": N}]`
+            key and `total` counts every match, ignoring limit/offset.
         """
         params: Dict[str, Any] = {
             "select": "id,name,phone,national_id,type,source,created_at,orders(count)",
@@ -153,7 +175,7 @@ class CustomerRepository:
             response = await client.get(
                 f"{self.base_url}/customers",
                 params=params,
-                headers=self.headers,
+                headers={**self.headers, "Prefer": "count=exact"},
             )
             try:
                 response.raise_for_status()
@@ -165,7 +187,11 @@ class CustomerRepository:
                     detail,
                 )
                 raise HTTPException(status_code=response.status_code, detail=detail)
-            return response.json()
+
+            rows = response.json()
+            return rows, _parse_content_range_total(
+                response.headers.get("content-range"), fallback=len(rows)
+            )
 
     async def get_detail_with_orders(
         self, customer_id: str

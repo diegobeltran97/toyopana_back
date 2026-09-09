@@ -16,6 +16,10 @@ def add_cors(app):
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
-        expose_headers=["*"],
+        # `*` is only honoured for non-credentialed requests, and this API is
+        # mounted with allow_credentials, so any caller that turns credentials
+        # on loses every exposed header. Name the ones the frontend actually
+        # reads explicitly — an explicit name is always honoured.
+        expose_headers=["*", "X-Total-Count"],
         max_age=3600,  # Cache preflight requests for 1 hour
     )
