@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 import pytest
 from fastapi import HTTPException
 
+from services.citas_service import ALLOWED_TRANSITIONS
 from schemas.cita import CitaCreate, CitaStatus, CitaUpdate
 from services.citas_service import (
     ALLOWED_TRANSITIONS,
@@ -258,3 +259,36 @@ async def test_delete_works_from_a_terminal_state():
 def test_terminal_states_have_no_outgoing_transitions():
     for terminal in ("cumplida", "no_show", "cancelada"):
         assert ALLOWED_TRANSITIONS[terminal] == set()
+
+
+class TestEstadoSolicitada:
+    """El estado con el que nace una cita pedida por el cliente.
+
+    Es lo que separa "el cliente la pidió" de "el taller la agendó". Sin él,
+    una cita creada desde la agenda web nacería FIRME y el cliente se iría
+    creyendo que lo esperan.
+    """
+
+    def test_solicitada_es_un_estado_valido(self):
+        assert CitaStatus.solicitada == "solicitada"
+
+    def test_una_solicitud_puede_aceptarse(self):
+        assert CitaStatus.agendada in ALLOWED_TRANSITIONS[CitaStatus.solicitada]
+
+    def test_una_solicitud_puede_rechazarse(self):
+        assert CitaStatus.cancelada in ALLOWED_TRANSITIONS[CitaStatus.solicitada]
+
+    def test_una_solicitud_NO_puede_saltar_a_cumplida(self):
+        """Una cita que nadie aceptó no puede haberse cumplido."""
+        assert CitaStatus.cumplida not in ALLOWED_TRANSITIONS[CitaStatus.solicitada]
+
+    def test_una_solicitud_NO_puede_saltar_a_confirmada(self):
+        assert CitaStatus.confirmada not in ALLOWED_TRANSITIONS[CitaStatus.solicitada]
+
+    def test_ningun_estado_vuelve_a_solicitada(self):
+        """Es la entrada del ciclo: una cita ya aceptada no regresa a "nadie la
+        ha mirado"."""
+        assert all(
+            CitaStatus.solicitada not in destinos
+            for destinos in ALLOWED_TRANSITIONS.values()
+        )

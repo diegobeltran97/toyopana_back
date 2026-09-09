@@ -19,6 +19,8 @@ from api.v1.endpoints import customers
 from api.v1.endpoints import marketing
 from api.v1.endpoints import citas
 from api.v1.endpoints import templates
+from api.v1.endpoints import business_rules
+from api.v1.endpoints import agenda_publica
 
 router = APIRouter()
 router.include_router(health.router, prefix="/api", tags=["health"])
@@ -41,3 +43,6 @@ router.include_router(customers.router, prefix="/api/customers", tags=["customer
 router.include_router(marketing.router, prefix="/api/marketing", tags=["marketing"])
 router.include_router(citas.router, prefix="/api/citas", tags=["citas"])
 router.include_router(templates.router, prefix="/api/templates", tags=["templates"])
+router.include_router(business_rules.router, prefix="/api/ajustes", tags=["ajustes"])
+# Sin sesión: el tenant sale del token firmado en el path.
+router.include_router(agenda_publica.router, prefix="/api/public", tags=["agenda-publica"])

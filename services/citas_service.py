@@ -22,10 +22,16 @@ logger = logging.getLogger(__name__)
 
 PANAMA_TZ = ZoneInfo("America/Panama")
 
-# Legal status moves. A cita starts 'agendada'; the three end states are
-# terminal. 'cumplida' will normally be reached by the deferred cita->order
+# Legal status moves. A cita booked in the app starts 'agendada'; one requested
+# by a customer through the web agenda starts 'solicitada'. The three end states
+# are terminal. 'cumplida' will normally be reached by the deferred cita->order
 # conversion, but is allowed manually too (a walk-in recorded after the fact).
+#
+# 'solicitada' only goes to 'agendada' or 'cancelada': a cita nobody accepted
+# cannot have been fulfilled. And nothing goes BACK to 'solicitada' -- it is the
+# entry to the cycle, not a state to return to.
 ALLOWED_TRANSITIONS: Dict[str, set] = {
+    "solicitada": {"agendada", "cancelada"},
     "agendada": {"confirmada", "cancelada", "no_show", "cumplida"},
     "confirmada": {"cumplida", "cancelada", "no_show"},
     "cumplida": set(),
@@ -89,11 +95,24 @@ async def create_cita(
     repo = repo or CitaRepository()
 
     payload: Dict[str, Any] = {
-        "customer_id": str(data.customer_id),
+        "customer_id": str(data.customer_id) if data.customer_id else None,
         "scheduled_at": data.scheduled_at.isoformat(),
         "service_type": data.service_type,
-        "status": CitaStatus.agendada.value,
+        # El estado viene del payload: la app crea 'agendada' (su default) y la
+        # agenda web pasa 'solicitada'. Quemarlo aquí haría que toda cita pedida
+        # por un cliente naciera firme.
+        "status": data.status.value,
     }
+    if data.service_type_id is not None:
+        payload["service_type_id"] = str(data.service_type_id)
+    if data.created_via is not None:
+        payload["created_via"] = data.created_via
+    if data.solicitud_texto is not None:
+        payload["solicitud_texto"] = data.solicitud_texto
+    if data.solicitante_nombre is not None:
+        payload["solicitante_nombre"] = data.solicitante_nombre
+    if data.solicitante_telefono is not None:
+        payload["solicitante_telefono"] = data.solicitante_telefono
     row = await repo.create(organization_id, payload)
     cita = CitaRead.model_validate(row)
 
@@ -138,6 +157,22 @@ async def list_citas(
         status=status.value if status else None,
     )
     return [CitaRead.model_validate(row) for row in rows]
+
+
+async def estado_actual(
+    organization_id: str,
+    cita_id: str,
+    *,
+    repo: Optional[CitaRepository] = None,
+) -> Optional[Dict[str, Any]]:
+    """El estado en que está una cita, antes de tocarla.
+
+    El aviso al cliente depende de DE DÓNDE viene el cambio, no solo de a dónde
+    va: 'solicitada -> agendada' es "te confirmamos"; 'confirmada -> agendada'
+    no le concierne. Después del update ese dato ya se perdió.
+    """
+    repo = repo or CitaRepository()
+    return await repo.get(cita_id, organization_id)
 
 
 async def update_cita(

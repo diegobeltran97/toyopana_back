@@ -9,8 +9,11 @@ from pydantic import ValidationError
 from schemas.cita import CitaCreate, CitaCustomer, CitaRead, CitaStatus, CitaUpdate
 
 
-def test_status_enum_has_the_five_lifecycle_values():
+def test_status_enum_has_the_six_lifecycle_values():
+    """'solicitada' entró con la migración 006: es la cita que el cliente pidió
+    por la agenda web y que el taller todavía no ha mirado."""
     assert {s.value for s in CitaStatus} == {
+        "solicitada",
         "agendada",
         "confirmada",
         "cumplida",

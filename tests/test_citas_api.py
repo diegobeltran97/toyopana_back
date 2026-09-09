@@ -208,3 +208,204 @@ def test_403_when_the_user_has_no_organization():
     response = client.get("/api/citas", params={"from": "2026-09-01", "to": "2026-09-30"})
 
     assert response.status_code == 403
+
+
+class TestAvisoAlCliente:
+    """Aceptar o rechazar una solicitud desde el calendario le llega al cliente.
+
+    Es lo que cierra el ciclo que abre la agenda web: sin esto el taller acepta
+    la cita y nadie se lo dice al cliente, que queda esperando.
+    """
+
+    @pytest.fixture
+    def avisos(self, monkeypatch):
+        registrados = []
+
+        async def fake_avisar(provider, *, anterior, cita):
+            registrados.append((anterior, cita.get("status")))
+
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", fake_avisar)
+        return registrados
+
+    def test_aceptar_una_solicitud_dispara_el_aviso(self, monkeypatch, avisos):
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.agendada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "solicitada"}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        client.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+        assert avisos == [("solicitada", CitaStatus.agendada)]
+
+    def test_un_cambio_interno_no_dispara_aviso(self, monkeypatch, avisos):
+        """agendada -> confirmada es trabajo del taller, no del cliente. El
+        filtro vive en el servicio de aviso; aquí se comprueba que igual se le
+        consulta con el estado anterior correcto."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.confirmada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "agendada"}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        client.patch(f"/api/citas/{CITA_ID}", json={"status": "confirmada"})
+
+        assert avisos == [("agendada", CitaStatus.confirmada)]
+
+    def test_un_fallo_del_aviso_no_rompe_el_cambio_de_estado(self, monkeypatch):
+        """El cambio ya se guardó y es la verdad: el 200 no puede depender de
+        que WhatsApp responda."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.agendada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "solicitada"}
+
+        async def explota(provider, *, anterior, cita):
+            raise RuntimeError("whapi caída")
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", explota)
+
+        # TestClient re-lanza las excepciones de las tareas de fondo, lo que
+        # esconde el status code que el llamador recibió de verdad: en
+        # producción la respuesta ya salió antes de que la tarea corriera.
+        sin_relanzar = TestClient(app, raise_server_exceptions=False)
+
+        r = sin_relanzar.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+        assert r.status_code == 200
+
+
+class TestGenerarLinkDeAgenda:
+    """El taller genera el link que le manda al cliente por WhatsApp.
+
+    Autenticado y con la organización tomada del token del EMPLEADO: el link
+    que sale lleva firmada esa organización, así que un taller no puede emitir
+    un link que agende en la agenda de otro.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch):
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_TOKEN_SECRET",
+                            "secreto-de-prueba", raising=False)
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_BASE_URL",
+                            "https://toyopana.app", raising=False)
+
+    def _pedir(self):
+        return client.post("/api/citas/link-agenda")
+
+    def test_devuelve_un_link_completo(self):
+        url = self._pedir().json()["url"]
+
+        assert url.startswith("https://toyopana.app/agenda/")
+
+    def test_el_link_no_lleva_cliente(self):
+        """Genérico a propósito: el empleado lo comparte sin buscar antes a la
+        persona, y quien lo abre se identifica en la página."""
+        from services.agenda_token import DatosToken, leer_token
+
+        url = self._pedir().json()["url"]
+        token = url.rsplit("/", 1)[1]
+
+        assert not hasattr(leer_token(token, secreto="secreto-de-prueba"),
+                           "customer_id")
+
+    def test_el_token_lleva_la_organizacion_del_empleado(self):
+        """Un taller no puede emitir un link que agende en la agenda de otro."""
+        from services.agenda_token import leer_token
+
+        url = self._pedir().json()["url"]
+        token = url.rsplit("/", 1)[1]
+
+        assert leer_token(token, secreto="secreto-de-prueba").organization_id == ORG
+
+    def test_dice_cuando_vence(self):
+        """La pantalla lo muestra para que el empleado sepa si vale la pena
+        reenviar el mismo link o pedir uno nuevo."""
+        assert "expira_en" in self._pedir().json()
+
+    def test_sin_sesion_no_se_generan_links(self):
+        app.dependency_overrides.clear()
+
+        assert self._pedir().status_code == 401
+
+    def test_sin_secreto_configurado_falla_claro(self, monkeypatch):
+        """Falla cerrado y con un mensaje que dice qué configurar, en vez de
+        emitir un link que nadie va a poder abrir."""
+        monkeypatch.setattr(citas_endpoint.settings, "AGENDA_TOKEN_SECRET", "",
+                            raising=False)
+
+        assert self._pedir().status_code == 503
+
+
+class TestElAvisoLlegaPorElEndpointCompleto:
+    """Confirmar por la ruta HTTP realmente manda el mensaje.
+
+    La otra clase sustituye `avisar_cambio_de_estado` y solo comprueba que se
+    agenda la tarea. Eso dejó pasar el bug del enum: la tarea se agendaba con
+    los argumentos correctos y la función real retornaba sin enviar.
+
+    Aquí corre la función DE VERDAD, con un proveedor falso. Es el tramo que
+    faltaba: endpoint -> BackgroundTask -> aviso -> proveedor.
+    """
+
+    @pytest.fixture
+    def proveedor(self, monkeypatch):
+        enviados = []
+
+        class FakeProvider:
+            async def send_text(self, msg):
+                enviados.append(msg)
+                from core.result import Result
+                from schemas.messaging import SentMessage
+                return Result.success(SentMessage(id="m1", to=msg.phone, status="sent"))
+
+        app.dependency_overrides[citas_endpoint.get_messaging_provider] = (
+            lambda: FakeProvider()
+        )
+        monkeypatch.setattr(citas_endpoint.settings, "WHATSAPP_ALLOWED_NUMBERS", "",
+                            raising=False)
+        yield enviados
+        app.dependency_overrides.pop(citas_endpoint.get_messaging_provider, None)
+
+    def _confirmar(self, monkeypatch, anterior="solicitada"):
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=data.status)
+
+        async def fake_get(org, cita_id):
+            return {"status": anterior}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        return client.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+    def test_confirmar_envia_el_mensaje(self, monkeypatch, proveedor):
+        r = self._confirmar(monkeypatch)
+
+        assert r.status_code == 200
+        assert len(proveedor) == 1
+
+    def test_el_mensaje_va_al_telefono_del_cliente(self, monkeypatch, proveedor):
+        self._confirmar(monkeypatch)
+
+        assert proveedor[0].phone == "+50761234567"
+
+    def test_el_mensaje_dice_que_quedo_confirmada(self, monkeypatch, proveedor):
+        self._confirmar(monkeypatch)
+
+        assert "onfirmada" in proveedor[0].body
+
+    def test_un_cambio_interno_no_envia_nada(self, monkeypatch, proveedor):
+        """agendada -> confirmada es trabajo del taller, no del cliente."""
+        self._confirmar(monkeypatch, anterior="agendada")
+
+        assert proveedor == []
