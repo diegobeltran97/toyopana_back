@@ -208,3 +208,77 @@ def test_403_when_the_user_has_no_organization():
     response = client.get("/api/citas", params={"from": "2026-09-01", "to": "2026-09-30"})
 
     assert response.status_code == 403
+
+
+class TestAvisoAlCliente:
+    """Aceptar o rechazar una solicitud desde el calendario le llega al cliente.
+
+    Es lo que cierra el ciclo que abre la agenda web: sin esto el taller acepta
+    la cita y nadie se lo dice al cliente, que queda esperando.
+    """
+
+    @pytest.fixture
+    def avisos(self, monkeypatch):
+        registrados = []
+
+        async def fake_avisar(provider, *, anterior, cita):
+            registrados.append((anterior, cita.get("status")))
+
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", fake_avisar)
+        return registrados
+
+    def test_aceptar_una_solicitud_dispara_el_aviso(self, monkeypatch, avisos):
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.agendada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "solicitada"}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        client.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+        assert avisos == [("solicitada", CitaStatus.agendada)]
+
+    def test_un_cambio_interno_no_dispara_aviso(self, monkeypatch, avisos):
+        """agendada -> confirmada es trabajo del taller, no del cliente. El
+        filtro vive en el servicio de aviso; aquí se comprueba que igual se le
+        consulta con el estado anterior correcto."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.confirmada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "agendada"}
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        client.patch(f"/api/citas/{CITA_ID}", json={"status": "confirmada"})
+
+        assert avisos == [("agendada", CitaStatus.confirmada)]
+
+    def test_un_fallo_del_aviso_no_rompe_el_cambio_de_estado(self, monkeypatch):
+        """El cambio ya se guardó y es la verdad: el 200 no puede depender de
+        que WhatsApp responda."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(status=CitaStatus.agendada)
+
+        async def fake_get(org, cita_id):
+            return {"status": "solicitada"}
+
+        async def explota(provider, *, anterior, cita):
+            raise RuntimeError("whapi caída")
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", explota)
+
+        # TestClient re-lanza las excepciones de las tareas de fondo, lo que
+        # esconde el status code que el llamador recibió de verdad: en
+        # producción la respuesta ya salió antes de que la tarea corriera.
+        sin_relanzar = TestClient(app, raise_server_exceptions=False)
+
+        r = sin_relanzar.patch(f"/api/citas/{CITA_ID}", json={"status": "agendada"})
+
+        assert r.status_code == 200

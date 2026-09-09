@@ -9,9 +9,20 @@ calendar, so the org must not be client-supplied.
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    status,
+)
 
 from api.deps import get_current_user
+from integrations.messaging.base import MessagingProvider
+from integrations.messaging.factory import get_messaging_provider
+from services.cita_aviso import avisar_cambio_de_estado
 from schemas.cita import CitaCreate, CitaRead, CitaStatus, CitaUpdate
 from services import citas_service
 
@@ -93,15 +104,39 @@ async def create_cita(
 )
 async def update_cita(
     payload: CitaUpdate,
+    background: BackgroundTasks,
     cita_id: str = Path(..., description="The cita id"),
     current_user: dict = Depends(get_current_user),
+    provider: MessagingProvider = Depends(get_messaging_provider),
 ):
     """
     Partial update. Returns 404 when the cita doesn't belong to the caller's
     organization and 409 when the requested status transition is not allowed.
+
+    Accepting or rejecting a customer's request also messages them on WhatsApp.
+    That is what closes the loop the web agenda opens: without it the shop
+    accepts the appointment and nobody tells the customer, who keeps waiting.
     """
     organization_id = require_organization_id(current_user)
-    return await citas_service.update_cita(organization_id, cita_id, payload)
+
+    # El estado anterior, ANTES de tocar la fila: el aviso depende de de dónde
+    # viene el cambio, y después del update ese dato ya se perdió.
+    previo = await citas_service.estado_actual(organization_id, cita_id)
+    anterior = (previo or {}).get("status", "")
+
+    cita = await citas_service.update_cita(organization_id, cita_id, payload)
+
+    # En segundo plano: el cambio ya se guardó y es la verdad, así que el 200
+    # no puede quedar esperando a que WhatsApp responda. avisar_cambio_de_estado
+    # nunca lanza, de modo que un fallo suyo no puede tocar este status code.
+    background.add_task(
+        avisar_cambio_de_estado,
+        provider,
+        anterior=anterior,
+        cita=cita.model_dump(),
+    )
+
+    return cita
 
 
 @router.delete(

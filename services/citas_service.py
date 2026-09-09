@@ -155,6 +155,22 @@ async def list_citas(
     return [CitaRead.model_validate(row) for row in rows]
 
 
+async def estado_actual(
+    organization_id: str,
+    cita_id: str,
+    *,
+    repo: Optional[CitaRepository] = None,
+) -> Optional[Dict[str, Any]]:
+    """El estado en que está una cita, antes de tocarla.
+
+    El aviso al cliente depende de DE DÓNDE viene el cambio, no solo de a dónde
+    va: 'solicitada -> agendada' es "te confirmamos"; 'confirmada -> agendada'
+    no le concierne. Después del update ese dato ya se perdió.
+    """
+    repo = repo or CitaRepository()
+    return await repo.get(cita_id, organization_id)
+
+
 async def update_cita(
     organization_id: str,
     cita_id: str,
