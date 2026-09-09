@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # never get a half-built bot; unset it to go live. Never the other way
     # round: an accidental value here silences the bot for everyone else.
     WHATSAPP_ALLOWED_NUMBERS: str = ""
+    # Firma de los links de agenda que se le mandan al cliente por WhatsApp.
+    # Vacío = no se pueden emitir ni verificar links: falla cerrado, para que un
+    # .env incompleto nunca se lea como "sin firma".
+    AGENDA_TOKEN_SECRET: str = ""
     ENVIRONMENT: str = "development"  # Optional with default
 
     class Config:

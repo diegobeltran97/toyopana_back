@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict
 class CitaStatus(str, Enum):
     """Lifecycle of a cita. Mirrors the citas_status_check DB constraint."""
 
+    # Entrada del ciclo: el cliente la pidió por la agenda web, nadie la ha
+    # mirado. No ocupa cupo hasta que el taller la acepte.
+    solicitada = "solicitada"
     agendada = "agendada"
     confirmada = "confirmada"
     cumplida = "cumplida"
@@ -30,6 +33,12 @@ class CitaCreate(BaseModel):
     customer_id: uuid.UUID
     scheduled_at: datetime
     service_type: Optional[str] = None
+    service_type_id: Optional[uuid.UUID] = None
+    # 'agendada' por defecto: el modal del taller crea citas firmes. La agenda
+    # web pasa 'solicitada' explícitamente.
+    status: CitaStatus = CitaStatus.agendada
+    created_via: Optional[str] = None
+    solicitud_texto: Optional[str] = None
 
 
 class CitaUpdate(BaseModel):
@@ -60,6 +69,9 @@ class CitaRead(BaseModel):
     service_type: Optional[str] = None
     status: CitaStatus
     converted_order_id: Optional[uuid.UUID] = None
+    service_type_id: Optional[uuid.UUID] = None
+    created_via: Optional[str] = None
+    solicitud_texto: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     customer: Optional[CitaCustomer] = None

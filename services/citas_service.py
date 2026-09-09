@@ -22,10 +22,16 @@ logger = logging.getLogger(__name__)
 
 PANAMA_TZ = ZoneInfo("America/Panama")
 
-# Legal status moves. A cita starts 'agendada'; the three end states are
-# terminal. 'cumplida' will normally be reached by the deferred cita->order
+# Legal status moves. A cita booked in the app starts 'agendada'; one requested
+# by a customer through the web agenda starts 'solicitada'. The three end states
+# are terminal. 'cumplida' will normally be reached by the deferred cita->order
 # conversion, but is allowed manually too (a walk-in recorded after the fact).
+#
+# 'solicitada' only goes to 'agendada' or 'cancelada': a cita nobody accepted
+# cannot have been fulfilled. And nothing goes BACK to 'solicitada' -- it is the
+# entry to the cycle, not a state to return to.
 ALLOWED_TRANSITIONS: Dict[str, set] = {
+    "solicitada": {"agendada", "cancelada"},
     "agendada": {"confirmada", "cancelada", "no_show", "cumplida"},
     "confirmada": {"cumplida", "cancelada", "no_show"},
     "cumplida": set(),
@@ -92,8 +98,17 @@ async def create_cita(
         "customer_id": str(data.customer_id),
         "scheduled_at": data.scheduled_at.isoformat(),
         "service_type": data.service_type,
-        "status": CitaStatus.agendada.value,
+        # El estado viene del payload: la app crea 'agendada' (su default) y la
+        # agenda web pasa 'solicitada'. Quemarlo aquí haría que toda cita pedida
+        # por un cliente naciera firme.
+        "status": data.status.value,
     }
+    if data.service_type_id is not None:
+        payload["service_type_id"] = str(data.service_type_id)
+    if data.created_via is not None:
+        payload["created_via"] = data.created_via
+    if data.solicitud_texto is not None:
+        payload["solicitud_texto"] = data.solicitud_texto
     row = await repo.create(organization_id, payload)
     cita = CitaRead.model_validate(row)
 
