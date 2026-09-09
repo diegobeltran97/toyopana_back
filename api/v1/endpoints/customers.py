@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Path, Query, Response
 
 from schemas.customer import CustomerDetail, CustomerListItem
 from services import customers_service
@@ -15,6 +15,7 @@ router = APIRouter()
     tags=["customers"],
 )
 async def list_customers(
+    response: Response,
     organization_id: str = Query(..., description="Organization to list customers for"),
     search: Optional[str] = Query(
         None, description="Filter by name/phone/national_id (case-insensitive partial match)"
@@ -29,10 +30,17 @@ async def list_customers(
     computed via a single PostgREST embedded-count query. This route is
     intentionally open (no auth dependency), matching the sibling
     `/orders/customers/*` routes.
+
+    The total number of matches — ignoring `limit`/`offset` — is returned in
+    the `X-Total-Count` response header, so a paginated caller can size its
+    pager without a second request. It rides in a header rather than wrapping
+    the body so the response shape stays a plain list for existing callers.
     """
-    return await customers_service.list_customers(
+    customers, total = await customers_service.list_customers(
         organization_id, search=search, limit=limit, offset=offset
     )
+    response.headers["X-Total-Count"] = str(total)
+    return customers
 
 
 @router.get(

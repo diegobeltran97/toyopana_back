@@ -1,6 +1,6 @@
 import logging
 from statistics import mean
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
@@ -14,7 +14,7 @@ async def list_customers(
     search: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], int]:
     """
     Return the client directory for an organization, each row annotated with
     its visit count.
@@ -26,11 +26,13 @@ async def list_customers(
         offset: Pagination offset
 
     Returns:
-        A list of dicts shaped like CustomerListItem (raw `orders` embed
-        replaced by a flat `visitas` count).
+        A `(customers, total)` pair. `customers` are dicts shaped like
+        CustomerListItem (raw `orders` embed replaced by a flat `visitas`
+        count); `total` counts every match, ignoring limit/offset, so a
+        paginated caller can size its pager.
     """
     repo = CustomerRepository()
-    rows = await repo.list_with_order_counts(
+    rows, total = await repo.list_with_order_counts(
         organization_id, search=search, limit=limit, offset=offset
     )
 
@@ -41,12 +43,13 @@ async def list_customers(
         customers.append({**row, "visitas": visitas})
 
     logger.info(
-        "Listed %d customer(s) for org %s (search=%r)",
+        "Listed %d of %d customer(s) for org %s (search=%r)",
         len(customers),
+        total,
         organization_id,
         search,
     )
-    return customers
+    return customers, total
 
 
 async def get_customer_detail(customer_id: str) -> Dict[str, Any]:
