@@ -159,3 +159,55 @@ class TestNadaPuedeRomperse:
         await aviso.avisar_cambio_de_estado(provider, anterior="solicitada", cita=cita)
 
         assert provider.enviados == []
+
+
+class TestAllowlistDeTesting:
+    """El aviso también respeta WHATSAPP_ALLOWED_NUMBERS.
+
+    Hueco encontrado probando en el navegador: el flag frenaba las respuestas
+    del bot entrante pero NO estos avisos, así que confirmar una cita en el
+    panel le mandaba un WhatsApp real a un cliente real — que es exactamente lo
+    que el flag existe para evitar mientras se prueba.
+    """
+
+    @pytest.fixture
+    def allowlist(self, monkeypatch):
+        def _set(valor):
+            monkeypatch.setattr(
+                aviso.settings, "WHATSAPP_ALLOWED_NUMBERS", valor, raising=False
+            )
+        return _set
+
+    async def test_un_numero_listado_recibe_el_aviso(self, allowlist):
+        allowlist("50768510658")
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada", cita=_cita("agendada")
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_un_numero_no_listado_no_recibe_nada(self, allowlist):
+        allowlist("50768510658")
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada",
+            cita=_cita("agendada", telefono="+50761112222"),
+        )
+
+        assert provider.enviados == []
+
+    async def test_vacio_deja_pasar_a_todos(self, allowlist):
+        """El default. Olvidar configurarlo no puede callar los avisos en
+        producción."""
+        allowlist("")
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_estado(
+            provider, anterior="solicitada",
+            cita=_cita("agendada", telefono="+50761112222"),
+        )
+
+        assert len(provider.enviados) == 1

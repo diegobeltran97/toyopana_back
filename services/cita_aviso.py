@@ -22,7 +22,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from core.config import settings
 from integrations.messaging.base import MessagingProvider
+from services.allowlist import puede_recibir
 from schemas.messaging import OutboundMessage
 from services.business_rules import a_hora_local
 
@@ -94,6 +96,11 @@ async def avisar_cambio_de_estado(
         # Un cliente sin teléfono cargado no tiene a dónde recibir el aviso.
         # No es un error: el taller lo verá igual en su calendario.
         logger.info("Cita %s sin teléfono; no se avisa", cita.get("id"))
+        return
+
+    # Misma compuerta que las respuestas del bot: mientras se prueba, solo los
+    # números listados reciben mensajes.
+    if not puede_recibir(telefono):
         return
 
     try:

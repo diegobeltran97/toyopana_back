@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from core.config import settings
 from integrations.messaging.base import MessagingProvider
 from repositories.business_rules import BusinessRulesRepository
+from services.allowlist import puede_recibir
 from services.business_rules import texto_de_horario
 from repositories.conversations import (
     record_message,
@@ -266,30 +267,9 @@ def _welcome_menu(phone: str) -> OutboundInteractive:
     return _node_to_message(FLUJO[NODO_INICIAL], phone)
 
 
-def _only_digits(phone: str) -> str:
-    """Compare numbers by their digits alone.
-
-    The setting is typed by a human, so "+507 6851-0658", "507 6851 0658" and
-    "50768510658" all have to mean the same number. A formatting difference
-    silently stopping the replies would look exactly like a broken bot.
-    """
-    return "".join(filter(str.isdigit, phone))
-
-
-def _is_reply_allowed(phone: str) -> bool:
-    """Testing-mode allowlist.
-
-    Empty setting means disabled: everyone gets a reply. That direction matters
-    -- forgetting to configure this can never silence the bot, while setting it
-    by accident is loud (every skip is logged) and obvious.
-    """
-    raw = getattr(settings, "WHATSAPP_ALLOWED_NUMBERS", "") or ""
-    allowed = {_only_digits(n) for n in raw.split(",") if _only_digits(n)}
-
-    if not allowed:
-        return True
-
-    return _only_digits(phone) in allowed
+# La compuerta vive en services/allowlist.py, compartida con los avisos de
+# cita: una copia por sitio de uso es como uno de los dos deja de respetarla.
+_is_reply_allowed = puede_recibir
 
 
 async def _decide_reply(organization_id: str, event: InboundMessage):
