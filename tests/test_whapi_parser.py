@@ -240,3 +240,62 @@ class TestButtonIdsRoundTrip:
         [event] = parser.parse(REAL_BUTTON_REPLY_PAYLOAD)
 
         assert event.reply_id == "menu_agendar_cita"
+
+
+LIST_REPLY_REAL = {
+    "messages": [
+        {
+            "id": "listv3-1",
+            "from_me": False,
+            "type": "reply",
+            "chat_id": "50768510658@s.whatsapp.net",
+            "timestamp": 1789045887,
+            "reply": {
+                "type": "list_reply",
+                # Capturado de producción: las listas prefijan "ListV3:", no
+                # "ButtonsV3:". El menú pasó de 3 botones a 4 opciones (lista) y
+                # el ruteo dejó de coincidir en silencio.
+                "list_reply": {"id": "ListV3:menu_agendar_cita", "title": "Agendar cita"},
+            },
+            "from": "50768510658",
+        }
+    ],
+    "event": {"type": "messages", "event": "post"},
+    "channel_id": "TOYOPANA-M72HC",
+}
+
+
+class TestPrefijosDeWhapi:
+    """Whapi devuelve el id con un prefijo distinto según el tipo de menú.
+
+    Bug de producción: al pasar el menú a 4 opciones se volvió lista, el id
+    llegó como "ListV3:..." en vez de "ButtonsV3:...", ningún nodo coincidió y
+    el bot repitió el saludo cada vez que alguien tocaba una opción.
+    """
+
+    def test_el_prefijo_de_lista_se_quita(self):
+        [event] = parser.parse(LIST_REPLY_REAL)
+
+        assert event.reply_id == "menu_agendar_cita"
+
+    def test_el_de_botones_sigue_funcionando(self):
+        [event] = parser.parse(REAL_BUTTON_REPLY_PAYLOAD)
+
+        assert event.reply_id == "menu_agendar_cita"
+
+    def test_un_prefijo_que_no_conocemos_no_rompe_el_id(self):
+        """Si Whapi inventa otro (TemplateV3, PollV3…), es mejor pasar el id
+        entero que devolver None: al menos queda visible en los logs en vez de
+        desaparecer."""
+        payload = {
+            **LIST_REPLY_REAL,
+            "messages": [{
+                **LIST_REPLY_REAL["messages"][0],
+                "reply": {"type": "list_reply",
+                          "list_reply": {"id": "OtroV9:menu_cotizacion"}},
+            }],
+        }
+
+        [event] = parser.parse(payload)
+
+        assert event.reply_id == "OtroV9:menu_cotizacion"

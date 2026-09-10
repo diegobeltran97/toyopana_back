@@ -29,11 +29,18 @@ PROVIDER = "whapi"
 # deliberately.
 HANDLED_TYPES = frozenset({"text", "reply"})
 
-# Whapi echoes back the button id we sent with its own prefix
-# ("ButtonsV3:menu_cotizacion"). Stripping it here is what makes the id we send
-# equal the id we receive -- without it, deterministic routing on reply_id
-# silently never matches.
-_REPLY_ID_PREFIXES = ("ButtonsV3:",)
+# Whapi echoes back the option id we sent, prefixed by the KIND of menu it was
+# rendered as: "ButtonsV3:" for quick-reply buttons, "ListV3:" for a list.
+# Stripping it is what makes the id we send equal the id we receive.
+#
+# Both are needed because the same menu changes kind with its size: three
+# options render as buttons, four as a list. Growing the welcome menu to four
+# switched it to "ListV3:", nothing matched, and the bot answered the greeting
+# again every time someone tapped an option -- with no error anywhere.
+#
+# An unknown prefix is left ON the id rather than dropped: a reply_id that no
+# longer matches is at least visible in the logs, while a None disappears.
+_REPLY_ID_PREFIXES = ("ButtonsV3:", "ListV3:")
 
 
 def channel_id(raw: Dict[str, Any]) -> str:
