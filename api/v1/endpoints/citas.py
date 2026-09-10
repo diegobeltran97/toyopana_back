@@ -101,6 +101,68 @@ async def create_cita(
     return await citas_service.create_cita(organization_id, payload)
 
 
+# ---------------------------------------------------------------------------
+# Rutas literales ANTES de las paramétricas.
+#
+# FastAPI resuelve en orden de declaración: con `/{cita_id}` declarada primero,
+# un futuro `POST /{cita_id}` capturaría "/link-agenda" y este endpoint
+# devolvería 405 sin que nadie entienda por qué.
+# ---------------------------------------------------------------------------
+
+
+class LinkAgendaResponse(BaseModel):
+    """El link listo para copiar o mandar por WhatsApp."""
+
+    url: str
+    expira_en: int = Field(..., description="Epoch en segundos")
+    horas_de_vigencia: int
+
+
+@router.post(
+    "/link-agenda",
+    response_model=LinkAgendaResponse,
+    summary="Generar el link de agenda para un cliente",
+)
+async def generar_link_agenda(
+    current_user: dict = Depends(get_current_user),
+) -> LinkAgendaResponse:
+    """Arma el link firmado que el taller le manda al cliente por WhatsApp.
+
+    El link es GENÉRICO: no lleva cliente. El empleado lo comparte sin tener que
+    buscar antes a la persona en el CRM — que es el caso común, porque alguien
+    que escribe desde un número desconocido todavía no tiene ficha. Quien lo
+    abre se identifica con nombre y teléfono en la página.
+
+    La organización sale del token del EMPLEADO y queda firmada dentro del link,
+    así que un taller no puede emitir uno que agende en la agenda de otro.
+
+    Sin AGENDA_TOKEN_SECRET responde 503 en vez de emitir un link que nadie
+    podría abrir: un error claro aquí ahorra la confusión de un cliente que
+    recibe un link muerto.
+    """
+    organization_id = require_organization_id(current_user)
+
+    if not settings.AGENDA_TOKEN_SECRET:
+        raise HTTPException(
+            status_code=503,
+            # Lo lee alguien en una pantalla, no en un log: dice qué falta y
+            # dónde, sin jerga.
+            detail=(
+                "Los links de agenda no están habilitados todavía. "
+                "Falta configurar AGENDA_TOKEN_SECRET en el servidor."
+            ),
+        )
+
+    token = crear_token(organization_id)
+    datos = leer_token(token)
+
+    return LinkAgendaResponse(
+        url=f"{settings.AGENDA_BASE_URL.rstrip('/')}/agenda/{token}",
+        expira_en=datos.expira_en,
+        horas_de_vigencia=TTL_HORAS_DEFAULT,
+    )
+
+
 @router.patch(
     "/{cita_id}",
     response_model=CitaRead,
@@ -163,56 +225,3 @@ async def delete_cita(
     """
     organization_id = require_organization_id(current_user)
     await citas_service.delete_cita(organization_id, cita_id)
-
-
-class LinkAgendaResponse(BaseModel):
-    """El link listo para copiar o mandar por WhatsApp."""
-
-    url: str
-    expira_en: int = Field(..., description="Epoch en segundos")
-    horas_de_vigencia: int
-
-
-@router.post(
-    "/link-agenda",
-    response_model=LinkAgendaResponse,
-    summary="Generar el link de agenda para un cliente",
-)
-async def generar_link_agenda(
-    current_user: dict = Depends(get_current_user),
-) -> LinkAgendaResponse:
-    """Arma el link firmado que el taller le manda al cliente por WhatsApp.
-
-    El link es GENÉRICO: no lleva cliente. El empleado lo comparte sin tener que
-    buscar antes a la persona en el CRM — que es el caso común, porque alguien
-    que escribe desde un número desconocido todavía no tiene ficha. Quien lo
-    abre se identifica con nombre y teléfono en la página.
-
-    La organización sale del token del EMPLEADO y queda firmada dentro del link,
-    así que un taller no puede emitir uno que agende en la agenda de otro.
-
-    Sin AGENDA_TOKEN_SECRET responde 503 en vez de emitir un link que nadie
-    podría abrir: un error claro aquí ahorra la confusión de un cliente que
-    recibe un link muerto.
-    """
-    organization_id = require_organization_id(current_user)
-
-    if not settings.AGENDA_TOKEN_SECRET:
-        raise HTTPException(
-            status_code=503,
-            # Lo lee alguien en una pantalla, no en un log: dice qué falta y
-            # dónde, sin jerga.
-            detail=(
-                "Los links de agenda no están habilitados todavía. "
-                "Falta configurar AGENDA_TOKEN_SECRET en el servidor."
-            ),
-        )
-
-    token = crear_token(organization_id)
-    datos = leer_token(token)
-
-    return LinkAgendaResponse(
-        url=f"{settings.AGENDA_BASE_URL.rstrip('/')}/agenda/{token}",
-        expira_en=datos.expira_en,
-        horas_de_vigencia=TTL_HORAS_DEFAULT,
-    )
