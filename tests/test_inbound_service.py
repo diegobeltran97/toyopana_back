@@ -606,3 +606,106 @@ class TestHorarioDesdeLaTabla:
         await entregar(provider, _event(reply_id="menu_horarios"))
 
         assert provider.sent_text and "Plaza Toledo" in provider.sent_text[0].body
+
+
+class TestElBotMandaElLinkDeAgenda:
+    """Tocar "Agendar cita" manda el link, no un pedido de que escriba la fecha.
+
+    Interpretar "el viernes temprano" en conversación era lo más frágil que
+    íbamos a construir, y una conversación no puede mostrar lo que ya está
+    ocupado. Por eso el bot no negocia la fecha: manda la agenda.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _secreto(self, monkeypatch):
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_TOKEN_SECRET",
+                            "secreto-de-prueba", raising=False)
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_BASE_URL",
+                            "https://toyopana.app", raising=False)
+
+    async def _responder(self, repo):
+        provider = FakeProvider()
+        await entregar(provider, _event(reply_id="menu_agendar_cita"))
+        return provider.sent_text[0].body
+
+    async def test_manda_un_link(self, repo):
+        assert "https://toyopana.app/agenda/" in await self._responder(repo)
+
+    async def test_el_link_lleva_un_token_valido(self, repo):
+        from services.agenda_token import leer_token
+
+        cuerpo = await self._responder(repo)
+        token = cuerpo.split("/agenda/")[1].split()[0].rstrip(".,")
+
+        assert leer_token(token, secreto="secreto-de-prueba").organization_id == ORG
+
+    async def test_dice_que_queda_pendiente_de_confirmacion(self, repo):
+        """Lo único que impide que el cliente se vaya creyendo que ya tiene
+        cita."""
+        cuerpo = await self._responder(repo)
+
+        assert "confirm" in cuerpo.lower()
+
+    async def test_ya_no_le_pide_que_escriba_la_fecha(self, repo):
+        """El texto viejo negociaba la fecha por chat."""
+        cuerpo = await self._responder(repo)
+
+        assert "qué día y hora te quedan bien" not in cuerpo
+
+    async def test_sin_base_url_no_manda_un_link_roto(self, repo, monkeypatch):
+        """Sin dominio el link sale como "/agenda/xxx": el cliente lo toca y no
+        pasa nada. Mejor pedir los datos por chat que mandar algo roto."""
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_BASE_URL", "",
+                            raising=False)
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_agendar_cita"))
+
+        assert "/agenda/" not in provider.sent_text[0].body
+
+    async def test_sin_secreto_configurado_el_bot_igual_responde(self, repo, monkeypatch):
+        """Un .env incompleto no puede dejar al cliente sin respuesta: se cae al
+        texto de siempre, que pide los datos por chat."""
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_TOKEN_SECRET", "",
+                            raising=False)
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_agendar_cita"))
+
+        assert provider.sent_text and len(provider.sent_text[0].body) > 20
+
+
+class TestLaPalabraCitaTambienMandaElLink:
+    """La página de link vencido promete: "escríbenos *cita* y te lo mandamos
+    de una". El bot tiene que cumplirlo, y por la misma vía que el botón."""
+
+    @pytest.fixture(autouse=True)
+    def _secreto(self, monkeypatch):
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_TOKEN_SECRET",
+                            "secreto-de-prueba", raising=False)
+        monkeypatch.setattr(inbound_service.settings, "AGENDA_BASE_URL",
+                            "https://toyopana.app", raising=False)
+
+    @pytest.mark.parametrize("texto", [
+        "cita",
+        "Cita",
+        "quiero una cita",
+        "necesito agendar",
+        "me pueden agendar para el viernes",
+    ])
+    async def test_manda_el_link(self, repo, texto):
+        provider = FakeProvider()
+
+        await entregar(provider, _event(body=texto))
+
+        assert "/agenda/" in provider.sent_text[0].body
+
+    async def test_no_confunde_palabras_que_la_contienen(self, repo):
+        """"solicita", "necesitaba", "citroen" contienen "cita" o se le
+        parecen; ninguna pide una cita."""
+        provider = FakeProvider()
+
+        await entregar(provider, _event(body="me solicitaron una cotización"))
+
+        enviado = provider.sent_text + provider.sent
+        assert "/agenda/" not in (getattr(enviado[0], "body", "") or "")

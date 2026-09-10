@@ -13,12 +13,14 @@ Two seams are deliberately marked and live nowhere else:
 
 import asyncio
 import logging
+import re
 import unicodedata
 from typing import Dict, List, Optional
 
 from core.config import settings
 from integrations.messaging.base import MessagingProvider
 from repositories.business_rules import BusinessRulesRepository
+from services.agenda_token import crear_token
 from services.allowlist import puede_recibir
 from services.business_rules import texto_de_horario
 from repositories.conversations import (
@@ -122,6 +124,9 @@ FLUJO: dict = {
         ),
     },
     "menu_agendar_cita": {
+        # RESPALDO. Lo normal es mandar el link de la agenda (ver
+        # _mensaje_de_agenda); este texto solo sale si no se puede emitir uno,
+        # porque dejar al cliente sin respuesta es peor que negociar por chat.
         "mensaje": (
             "Con gusto te agendamos 📅\n\n"
             "Indícanos qué día y hora te quedan bien, y el modelo de tu vehículo. "
@@ -153,6 +158,13 @@ FLUJO: dict = {
 # Deliberately narrow. Guessing wrong is worse than showing the menu: the
 # customer gets a confident answer to a question they did not ask.
 PALABRAS_CLAVE: dict = {
+    "menu_agendar_cita": (
+        "cita",
+        "agendar",
+        "agenda",
+        "turno",
+        "reservar",
+    ),
     "menu_horarios": (
         "horario",
         "horarios",
@@ -201,6 +213,17 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in sin_tildes if unicodedata.category(c) != "Mn")
 
 
+def _menciona(texto: str, palabra: str) -> bool:
+    """Si el texto contiene la palabra COMO PALABRA, no como pedazo de otra.
+
+    Buscar el substring pelado hacía que "me solicitaron una cotizacion"
+    mandara el link de la agenda: "soli-cita-ron" contiene "cita". El borde de
+    palabra es lo que separa pedir una cita de nombrarla por accidente, y sirve
+    igual para las frases de varias palabras ("donde quedan").
+    """
+    return re.search(rf"(?<!\w){re.escape(palabra)}(?!\w)", texto) is not None
+
+
 def _nodo_por_palabra_clave(body: Optional[str]) -> Optional[str]:
     """The node a free-text message names, if any."""
     if not body:
@@ -208,7 +231,7 @@ def _nodo_por_palabra_clave(body: Optional[str]) -> Optional[str]:
 
     texto = _normalizar(body)
     for nodo, palabras in PALABRAS_CLAVE.items():
-        if any(p in texto for p in palabras):
+        if any(_menciona(texto, p) for p in palabras):
             return nodo
     return None
 
@@ -241,6 +264,46 @@ async def _mensaje_de_horarios(organization_id: str, phone: str) -> OutboundMess
         cuerpo = f"🕐 *Horario de atención*\n{horario}\n\n{cuerpo}"
 
     return OutboundMessage(phone=phone, body=cuerpo)
+
+
+async def _mensaje_de_agenda(organization_id: str, phone: str) -> OutboundMessage:
+    """El link para que el cliente escoja su hora.
+
+    El bot no negocia la fecha por chat: interpretar "el viernes temprano" es lo
+    más frágil que se podría construir aquí, y una conversación no puede mostrar
+    lo que ya está ocupado. La agenda sí.
+
+    Si no se puede emitir el link (falta AGENDA_TOKEN_SECRET), cae al texto de
+    siempre: dejar al cliente sin respuesta es peor que pedirle los datos.
+    """
+    try:
+        base = (settings.AGENDA_BASE_URL or "").rstrip("/")
+        if not base:
+            raise RuntimeError("AGENDA_BASE_URL sin configurar")
+        url = f"{base}/agenda/{crear_token(organization_id)}"
+    except Exception:
+        logger.exception("No se pudo emitir el link de agenda; se responde con el texto")
+        return _node_to_message(FLUJO["menu_agendar_cita"], phone)
+
+    return OutboundMessage(
+        phone=phone,
+        body=(
+            "Con gusto 📅\n\n"
+            "Escoge el día y la hora que te sirvan aquí:\n"
+            f"{url}\n\n"
+            "Queda *pendiente de confirmación* del taller — te aviso por aquí "
+            "apenas la revisen."
+        ),
+    )
+
+
+# Nodos que no son texto fijo: se arman con datos del taller. Están en un
+# registro y no en ifs sueltos porque se llega a ellos por dos caminos --el
+# botón y la palabra clave-- y los dos tienen que responder lo mismo.
+NODOS_DINAMICOS = {
+    "menu_horarios": _mensaje_de_horarios,
+    "menu_agendar_cita": _mensaje_de_agenda,
+}
 
 
 def _node_to_message(node: dict, phone: str):
@@ -283,8 +346,8 @@ async def _decide_reply(organization_id: str, event: InboundMessage):
        the seam, not a dead end.
     """
     nodo_id = event.reply_id or ""
-    if nodo_id == "menu_horarios":
-        return await _mensaje_de_horarios(organization_id, event.from_phone)
+    if nodo_id in NODOS_DINAMICOS:
+        return await NODOS_DINAMICOS[nodo_id](organization_id, event.from_phone)
 
     node = FLUJO.get(nodo_id)
     if node is not None:
@@ -297,8 +360,10 @@ async def _decide_reply(organization_id: str, event: InboundMessage):
     por_palabra = _nodo_por_palabra_clave(texto)
     if por_palabra is not None:
         logger.info("Texto libre ruteado a %r por palabra clave", por_palabra)
-        if por_palabra == "menu_horarios":
-            return await _mensaje_de_horarios(organization_id, event.from_phone)
+        if por_palabra in NODOS_DINAMICOS:
+            return await NODOS_DINAMICOS[por_palabra](
+                organization_id, event.from_phone
+            )
         return _node_to_message(FLUJO[por_palabra], event.from_phone)
 
     # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
