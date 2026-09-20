@@ -224,3 +224,43 @@ class BusinessRulesRepository:
         response.raise_for_status()
         filas = response.json()
         return filas[0] if filas else None
+
+    async def borrar_dia_especial(self, organization_id: str, fecha: date) -> bool:
+        """Quita una excepción. False si esa fecha no tenía ninguna."""
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.delete(
+                f"{self.base_url}/business_calendar",
+                headers={**self.headers, "Prefer": "return=representation"},
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "date": f"eq.{fecha.isoformat()}",
+                },
+            )
+        response.raise_for_status()
+        return bool(response.json())
+
+    async def agregar_dias_especiales(
+        self, organization_id: str, filas: List[dict]
+    ) -> int:
+        """Inserta las fechas que falten y devuelve cuántas entraron.
+
+        `ignore-duplicates` y no `merge-duplicates`: si el taller ya editó el 9
+        de enero para abrir medio día, volver a pulsar "cargar feriados" no
+        debe pisárselo.
+        """
+        if not filas:
+            return 0
+
+        cuerpo = [{"organization_id": organization_id, **fila} for fila in filas]
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.post(
+                f"{self.base_url}/business_calendar",
+                json=cuerpo,
+                headers={
+                    **self.headers,
+                    "Prefer": "return=representation,resolution=ignore-duplicates",
+                },
+                params={"on_conflict": "organization_id,date"},
+            )
+        response.raise_for_status()
+        return len(response.json())

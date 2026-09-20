@@ -8,7 +8,7 @@ The organization is the thing to guard here: these routes write the rules the
 bot obeys, so a caller must never be able to name someone else's tenant.
 """
 
-from datetime import time
+from datetime import date, time
 
 import pytest
 from fastapi import FastAPI
@@ -75,7 +75,21 @@ def _sin_db(monkeypatch):
             "sort_order": 0,
         }
 
+    async def fake_borrar_dia(organization_id, fecha):
+        llamadas.append(("borrar_dia", organization_id, fecha))
+        return fecha != date(2030, 1, 1)
+
+    async def fake_cargar_feriados(organization_id, anio):
+        llamadas.append(("cargar_feriados", organization_id, anio))
+        return 14
+
     monkeypatch.setattr(ajustes.business_rules_service, "leer_ajustes", fake_leer)
+    monkeypatch.setattr(
+        ajustes.business_rules_service, "borrar_dia_especial", fake_borrar_dia
+    )
+    monkeypatch.setattr(
+        ajustes.business_rules_service, "cargar_feriados", fake_cargar_feriados
+    )
     monkeypatch.setattr(ajustes.business_rules_service, "guardar_horario", fake_guardar_horario)
     monkeypatch.setattr(ajustes.business_rules_service, "crear_servicio", fake_crear_servicio)
     monkeypatch.setattr(
@@ -223,5 +237,46 @@ class TestActualizarServicio:
         app.dependency_overrides.clear()
 
         r = client.patch(f"/api/ajustes/servicios/{SERVICIO}", json={"active": False})
+
+        assert r.status_code == 401
+
+
+class TestBorrarDiaEspecial:
+    def test_borra_la_fecha(self, _sin_db):
+        r = client.delete("/api/ajustes/dias-especiales/2026-01-09")
+
+        assert r.status_code == 204
+        assert _sin_db[0] == ("borrar_dia", ORG, date(2026, 1, 9))
+
+    def test_una_fecha_sin_excepcion_da_404(self, _sin_db):
+        r = client.delete("/api/ajustes/dias-especiales/2030-01-01")
+
+        assert r.status_code == 404
+
+    def test_una_fecha_mal_escrita_da_422(self, _sin_db):
+        r = client.delete("/api/ajustes/dias-especiales/9-de-enero")
+
+        assert r.status_code == 422
+
+
+class TestCargarFeriados:
+    def test_carga_el_ano_pedido(self, _sin_db):
+        r = client.post("/api/ajustes/dias-especiales/feriados?anio=2026")
+
+        assert r.status_code == 200
+        assert r.json() == {"agregados": 14}
+        assert _sin_db[0] == ("cargar_feriados", ORG, 2026)
+
+    def test_sin_ano_no_se_adivina(self, _sin_db):
+        """Adivinar el año en curso cargaría feriados ya pasados sin que nadie
+        lo pidiera."""
+        r = client.post("/api/ajustes/dias-especiales/feriados")
+
+        assert r.status_code == 422
+
+    def test_sin_sesion_no_se_carga(self):
+        app.dependency_overrides.clear()
+
+        r = client.post("/api/ajustes/dias-especiales/feriados?anio=2026")
 
         assert r.status_code == 401

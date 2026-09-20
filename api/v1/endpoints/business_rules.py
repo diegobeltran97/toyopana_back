@@ -9,10 +9,11 @@ absent.
 Follows the shape of endpoints/citas.py.
 """
 
+from datetime import date
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from api.deps import get_current_user
 from schemas.business_rules import (
@@ -139,3 +140,42 @@ async def guardar_dia_especial(
         require_organization_id(current_user), dia
     )
     return {"fecha": dia.date.isoformat(), "abierto": dia.is_open}
+
+
+@router.delete(
+    "/dias-especiales/{fecha}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Quitar un feriado / horario especial",
+    tags=["ajustes"],
+)
+async def borrar_dia_especial(
+    fecha: date,
+    current_user: dict = Depends(get_current_user),
+) -> None:
+    """Quitar la excepción devuelve el día a lo que diga el horario semanal."""
+    borrado = await business_rules_service.borrar_dia_especial(
+        require_organization_id(current_user), fecha
+    )
+    if not borrado:
+        raise HTTPException(status_code=404, detail="Esa fecha no tiene excepción")
+
+
+@router.post(
+    "/dias-especiales/feriados",
+    status_code=status.HTTP_200_OK,
+    summary="Cargar los feriados de Panamá de un año",
+    tags=["ajustes"],
+)
+async def cargar_feriados(
+    anio: int = Query(..., ge=2020, le=2100, description="Año a cargar"),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Carga el calendario nacional del año, sin pisar lo ya ajustado a mano.
+
+    El año es obligatorio: adivinar el actual cargaría feriados ya pasados sin
+    que nadie lo pidiera.
+    """
+    agregados = await business_rules_service.cargar_feriados(
+        require_organization_id(current_user), anio
+    )
+    return {"agregados": agregados}

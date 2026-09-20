@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from repositories.business_rules import BusinessRulesRepository
+from services.business_rules import feriados_de_panama
 from schemas.business_rules import (
     DiaEspecialCreate,
     HorarioSemanal,
@@ -84,4 +85,24 @@ async def actualizar_servicio(
     """Cambio parcial de un servicio. None si no existe en esta organización."""
     return await BusinessRulesRepository().actualizar_servicio(
         organization_id, servicio_id, cambios.model_dump(exclude_unset=True)
+    )
+
+
+async def borrar_dia_especial(organization_id: str, fecha: date) -> bool:
+    """Quita una excepción. False si esa fecha no tenía ninguna."""
+    return await BusinessRulesRepository().borrar_dia_especial(organization_id, fecha)
+
+
+async def cargar_feriados(organization_id: str, anio: int) -> int:
+    """Carga los feriados de Panamá del año. Devuelve cuántos se agregaron.
+
+    Los que ya existían no se tocan, así que volver a pulsar el botón no
+    deshace lo que el taller haya ajustado a mano.
+    """
+    filas = [
+        {"date": fecha.isoformat(), "is_open": False, "reason": motivo}
+        for fecha, motivo in feriados_de_panama(anio)
+    ]
+    return await BusinessRulesRepository().agregar_dias_especiales(
+        organization_id, filas
     )

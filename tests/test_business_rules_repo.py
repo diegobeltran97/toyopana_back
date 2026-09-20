@@ -276,3 +276,56 @@ class TestActualizarServicio:
         )
 
         assert fila is None
+
+
+class TestBorrarDiaEspecial:
+    async def test_filtra_por_organizacion_y_fecha(self, _sin_red):
+        _sin_red({"business_calendar": [{"date": "2026-01-09"}]})
+
+        await BusinessRulesRepository().borrar_dia_especial(ORG, date(2026, 1, 9))
+
+        params = FakeAsyncClient.calls[-1]["params"]
+        assert params["organization_id"] == f"eq.{ORG}"
+        assert params["date"] == "eq.2026-01-09"
+
+    async def test_una_fecha_sin_excepcion_devuelve_false(self, _sin_red):
+        _sin_red({"business_calendar": []})
+
+        borrado = await BusinessRulesRepository().borrar_dia_especial(
+            ORG, date(2026, 1, 9)
+        )
+
+        assert borrado is False
+
+
+class TestAgregarDiasEspeciales:
+    async def test_no_pisa_lo_que_el_taller_ya_ajusto(self, _sin_red):
+        """ignore-duplicates y no merge: si el taller abrió medio día el 9 de
+        enero, recargar los feriados no debe deshacérselo."""
+        _sin_red({"business_calendar": [{"date": "2026-01-01"}]})
+
+        await BusinessRulesRepository().agregar_dias_especiales(
+            ORG, [{"date": "2026-01-01", "is_open": False, "reason": "Año Nuevo"}]
+        )
+
+        prefer = FakeAsyncClient.calls[-1]["headers"]["Prefer"]
+        assert "ignore-duplicates" in prefer
+        assert "merge-duplicates" not in prefer
+
+    async def test_le_pone_la_organizacion_a_cada_fila(self, _sin_red):
+        _sin_red({"business_calendar": []})
+
+        await BusinessRulesRepository().agregar_dias_especiales(
+            ORG, [{"date": "2026-01-01", "is_open": False, "reason": "Año Nuevo"}]
+        )
+
+        assert FakeAsyncClient.calls[-1]["json"][0]["organization_id"] == ORG
+
+    async def test_una_lista_vacia_no_llama_a_la_base(self, _sin_red):
+        """Un POST con lista vacía es un viaje a Supabase que no hace nada."""
+        _sin_red({"business_calendar": []})
+
+        agregados = await BusinessRulesRepository().agregar_dias_especiales(ORG, [])
+
+        assert agregados == 0
+        assert FakeAsyncClient.calls == []
