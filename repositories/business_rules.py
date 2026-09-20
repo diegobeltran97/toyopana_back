@@ -183,14 +183,44 @@ class BusinessRulesRepository:
             )
         response.raise_for_status()
 
-    async def servicios(self, organization_id: str) -> List[dict]:
-        """El catálogo activo, en el orden en que debe mostrarse."""
-        return await self._get(
-            "service_types",
-            {
-                "select": "id,name,duration_minutes,sort_order",
-                "organization_id": f"eq.{organization_id}",
-                "active": "is.true",
-                "order": "sort_order.asc,name.asc",
-            },
-        )
+    async def servicios(
+        self, organization_id: str, incluir_inactivos: bool = False
+    ) -> List[dict]:
+        """El catálogo, en el orden en que debe mostrarse.
+
+        `incluir_inactivos` existe para la pantalla de ajustes: un servicio
+        desactivado tiene que seguir viéndose ahí o no habría forma de
+        reactivarlo. Todo lo demás pide el default — un servicio desactivado
+        no debe poder reservarse.
+        """
+        params = {
+            "select": "id,name,duration_minutes,active,sort_order",
+            "organization_id": f"eq.{organization_id}",
+            "order": "sort_order.asc,name.asc",
+        }
+        if not incluir_inactivos:
+            params["active"] = "is.true"
+        return await self._get("service_types", params)
+
+    async def actualizar_servicio(
+        self, organization_id: str, servicio_id: str, datos: dict
+    ) -> Optional[dict]:
+        """Cambio parcial de un servicio. None si no existe en esta organización.
+
+        El filtro lleva `organization_id` además del id, y eso no es
+        redundante: sin él, conocer un UUID bastaría para editarle el catálogo
+        a otro taller.
+        """
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.patch(
+                f"{self.base_url}/service_types",
+                json=datos,
+                headers={**self.headers, "Prefer": "return=representation"},
+                params={
+                    "id": f"eq.{servicio_id}",
+                    "organization_id": f"eq.{organization_id}",
+                },
+            )
+        response.raise_for_status()
+        filas = response.json()
+        return filas[0] if filas else None

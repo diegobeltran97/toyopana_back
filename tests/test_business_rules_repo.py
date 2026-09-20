@@ -16,6 +16,14 @@ import repositories.business_rules as repo_module
 from repositories.business_rules import BusinessRulesRepository
 
 ORG = "11111111-1111-1111-1111-111111111111"
+SERVICIO = "33333333-3333-3333-3333-333333333333"
+FILA_SERVICIO = {
+    "id": SERVICIO,
+    "name": "Alineación",
+    "duration_minutes": 90,
+    "active": True,
+    "sort_order": 0,
+}
 
 
 class FakeResponse:
@@ -31,7 +39,7 @@ class FakeResponse:
 
 
 class FakeAsyncClient:
-    """Records every GET and answers with canned rows, keyed by table name."""
+    """Records every request and answers with canned rows, keyed by table name."""
 
     calls: list = []
 
@@ -46,6 +54,27 @@ class FakeAsyncClient:
 
     async def get(self, url, params=None, headers=None):
         FakeAsyncClient.calls.append({"url": url, "params": params})
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def patch(self, url, json=None, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": json, "headers": headers}
+        )
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def post(self, url, json=None, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": json, "headers": headers}
+        )
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def delete(self, url, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": None, "headers": headers}
+        )
         tabla = url.rsplit("/", 1)[-1]
         return FakeResponse(self._por_tabla.get(tabla, []))
 
@@ -185,3 +214,65 @@ class TestServicios:
         await BusinessRulesRepository().servicios(ORG)
 
         assert FakeAsyncClient.calls[-1]["params"]["active"] == "is.true"
+
+    async def test_la_pantalla_de_ajustes_puede_pedir_los_inactivos(self, _sin_red):
+        """Un servicio desactivado tiene que seguir viéndose en ajustes o no
+        habría forma de reactivarlo."""
+        _sin_red({"service_types": []})
+
+        await BusinessRulesRepository().servicios(ORG, incluir_inactivos=True)
+
+        assert "active" not in FakeAsyncClient.calls[-1]["params"]
+
+    async def test_pide_la_columna_active(self, _sin_red):
+        """Sin ella ServicioRead reporta active=True por su default y la
+        pantalla dibujaría todos los interruptores encendidos."""
+        _sin_red({"service_types": []})
+
+        await BusinessRulesRepository().servicios(ORG, incluir_inactivos=True)
+
+        assert "active" in FakeAsyncClient.calls[-1]["params"]["select"]
+
+
+class TestActualizarServicio:
+    async def test_filtra_por_id_y_por_organizacion(self, _sin_red):
+        """Sin el filtro de organización, conocer un UUID bastaría para
+        editarle el catálogo a otro taller."""
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        params = FakeAsyncClient.calls[-1]["params"]
+        assert params["id"] == f"eq.{SERVICIO}"
+        assert params["organization_id"] == f"eq.{ORG}"
+
+    async def test_manda_solo_los_campos_que_cambiaron(self, _sin_red):
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        assert FakeAsyncClient.calls[-1]["json"] == {"duration_minutes": 90}
+
+    async def test_devuelve_la_fila_actualizada(self, _sin_red):
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        fila = await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        assert fila["duration_minutes"] == 90
+
+    async def test_sin_fila_devuelve_none(self, _sin_red):
+        """PostgREST responde 200 con lista vacía cuando el filtro no encuentra
+        nada: es un 404, no un error."""
+        _sin_red({"service_types": []})
+
+        fila = await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"name": "X"}
+        )
+
+        assert fila is None

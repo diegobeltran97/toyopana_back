@@ -77,6 +77,37 @@ class ServicioRead(ServicioCreate):
     id: UUID
 
 
+class ServicioUpdate(BaseModel):
+    """Cambio parcial de un servicio: solo llegan los campos que se tocaron.
+
+    Parcial y no completo porque la pantalla edita una celda a la vez;
+    mandar el objeto entero haría que dos personas editando a la vez se
+    pisaran campos que ninguna tocó.
+    """
+
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    duration_minutes: Optional[int] = Field(None, ge=60, le=600)
+    active: Optional[bool] = None
+    sort_order: Optional[int] = Field(None, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def _nombre_con_contenido(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        limpio = v.strip()
+        if not limpio:
+            raise ValueError("El nombre no puede estar vacío")
+        return limpio
+
+    @model_validator(mode="after")
+    def _algo_que_cambiar(self) -> "ServicioUpdate":
+        """Un PATCH vacío llegaría a PostgREST como un UPDATE sin SET."""
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("No hay nada que cambiar")
+        return self
+
+
 class DiaEspecialCreate(BaseModel):
     """Un feriado o un horario especial para una fecha concreta."""
 

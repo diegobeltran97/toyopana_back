@@ -10,6 +10,7 @@ Follows the shape of endpoints/citas.py.
 """
 
 from typing import List
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -20,6 +21,7 @@ from schemas.business_rules import (
     HorarioSemanal,
     ServicioCreate,
     ServicioRead,
+    ServicioUpdate,
 )
 from services import business_rules_service
 
@@ -94,6 +96,31 @@ async def crear_servicio(
     fila = await business_rules_service.crear_servicio(
         require_organization_id(current_user), servicio
     )
+    return ServicioRead(**fila)
+
+
+@router.patch(
+    "/servicios/{servicio_id}",
+    response_model=ServicioRead,
+    summary="Cambiar un tipo de servicio",
+    tags=["ajustes"],
+)
+async def actualizar_servicio(
+    servicio_id: UUID,
+    cambios: ServicioUpdate,
+    current_user: dict = Depends(get_current_user),
+) -> ServicioRead:
+    """Renombrar, cambiar la duración, reordenar o desactivar.
+
+    Desactivar y no borrar: `citas.service_type_id` apunta aquí, y borrar un
+    servicio le dejaría a una cita vieja la duración del mínimo sin que nadie
+    se entere.
+    """
+    fila = await business_rules_service.actualizar_servicio(
+        require_organization_id(current_user), str(servicio_id), cambios
+    )
+    if fila is None:
+        raise HTTPException(status_code=404, detail="El servicio no existe")
     return ServicioRead(**fila)
 
 
