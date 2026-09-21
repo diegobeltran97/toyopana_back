@@ -46,7 +46,7 @@ class TestCuandoSeAvisa:
     async def test_aceptar_una_solicitud_avisa_al_cliente(self, ):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("agendada")
         )
 
@@ -55,7 +55,7 @@ class TestCuandoSeAvisa:
     async def test_rechazar_una_solicitud_tambien_avisa(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("cancelada")
         )
 
@@ -66,7 +66,7 @@ class TestCuandoSeAvisa:
         pidió saber cada movimiento de la agenda."""
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="agendada", cita=_cita("confirmada")
         )
 
@@ -75,7 +75,7 @@ class TestCuandoSeAvisa:
     async def test_no_se_avisa_si_el_estado_no_cambio(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("solicitada")
         )
 
@@ -85,7 +85,7 @@ class TestCuandoSeAvisa:
 class TestQueDiceElMensaje:
     async def _texto(self, estado):
         provider = FakeProvider()
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita(estado)
         )
         return provider.enviados[0].body
@@ -131,7 +131,7 @@ class TestNadaPuedeRomperse:
     async def test_un_fallo_del_proveedor_no_lanza(self):
         provider = FakeProvider(Result.failure("rate_limit", status_code=429))
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("agendada")
         )
 
@@ -140,7 +140,7 @@ class TestNadaPuedeRomperse:
             async def send_text(self, msg):
                 raise RuntimeError("whapi caída")
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             Explota(), anterior="solicitada", cita=_cita("agendada")
         )
 
@@ -148,7 +148,7 @@ class TestNadaPuedeRomperse:
         """El cliente puede no tener teléfono cargado; no hay a dónde avisar."""
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("agendada", telefono=None)
         )
 
@@ -159,7 +159,7 @@ class TestNadaPuedeRomperse:
         cita = {**_cita("agendada")}
         del cita["customer"]
 
-        await aviso.avisar_cambio_de_estado(provider, anterior="solicitada", cita=cita)
+        await aviso.avisar_cambio_de_cita(provider, anterior="solicitada", cita=cita)
 
         assert provider.enviados == []
 
@@ -185,7 +185,7 @@ class TestAllowlistDeTesting:
         allowlist("50768510658")
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=_cita("agendada")
         )
 
@@ -195,7 +195,7 @@ class TestAllowlistDeTesting:
         allowlist("50768510658")
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada",
             cita=_cita("agendada", telefono="+50761112222"),
         )
@@ -208,7 +208,7 @@ class TestAllowlistDeTesting:
         allowlist("")
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada",
             cita=_cita("agendada", telefono="+50761112222"),
         )
@@ -236,7 +236,7 @@ class TestSolicitudSinClienteEnElCRM:
     async def test_le_llega_el_aviso(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=self._solicitud()
         )
 
@@ -245,7 +245,7 @@ class TestSolicitudSinClienteEnElCRM:
     async def test_va_al_telefono_que_dejo(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=self._solicitud()
         )
 
@@ -254,7 +254,7 @@ class TestSolicitudSinClienteEnElCRM:
     async def test_la_saluda_por_el_nombre_que_escribio(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=self._solicitud()
         )
 
@@ -266,7 +266,7 @@ class TestSolicitudSinClienteEnElCRM:
         cita = {**self._solicitud(),
                 "customer": {"name": "Juan Pérez", "phone": "+50761112222"}}
 
-        await aviso.avisar_cambio_de_estado(provider, anterior="solicitada", cita=cita)
+        await aviso.avisar_cambio_de_cita(provider, anterior="solicitada", cita=cita)
 
         assert provider.enviados[0].phone == "+50761112222"
 
@@ -299,7 +299,7 @@ class TestElEstadoPuedeLlegarComoEnum:
     async def test_aceptar_avisa_aunque_el_estado_sea_un_enum(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada", cita=self._cita_real()
         )
 
@@ -308,7 +308,7 @@ class TestElEstadoPuedeLlegarComoEnum:
     async def test_rechazar_tambien(self):
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior="solicitada",
             cita=self._cita_real(CitaStatus.cancelada),
         )
@@ -320,8 +320,147 @@ class TestElEstadoPuedeLlegarComoEnum:
         venga puede ser enum o texto."""
         provider = FakeProvider()
 
-        await aviso.avisar_cambio_de_estado(
+        await aviso.avisar_cambio_de_cita(
             provider, anterior=CitaStatus.solicitada, cita=self._cita_real()
         )
 
         assert len(provider.enviados) == 1
+
+
+class TestAvisoAlReprogramar:
+    """El taller mueve una cita ya aceptada y el cliente tiene que enterarse.
+
+    Sin esto el cliente llega a la hora vieja, que es exactamente el fallo que
+    la agenda vino a eliminar — solo que entrando por la otra puerta.
+    """
+
+    ANTES = datetime(2026, 9, 15, 13, 0, tzinfo=timezone.utc)   # 8:00 a.m. Panamá
+    DESPUES = datetime(2026, 9, 16, 19, 0, tzinfo=timezone.utc)  # 2:00 p.m. Panamá
+
+    def _movida(self, estado="agendada"):
+        cita = _cita(estado=estado)
+        cita["scheduled_at"] = self.DESPUES
+        return cita
+
+    async def test_mover_una_cita_agendada_avisa(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(),
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_el_mensaje_lleva_las_dos_horas(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(),
+        )
+
+        cuerpo = provider.enviados[0].body
+        assert "miércoles 16 de septiembre" in cuerpo   # la nueva
+        assert "martes 15 de septiembre" in cuerpo      # la anterior
+
+    async def test_mover_una_confirmada_tambien_avisa(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="confirmada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(estado="confirmada"),
+        )
+
+        assert len(provider.enviados) == 1
+
+    async def test_la_misma_hora_no_avisa_nada(self):
+        provider = FakeProvider()
+        cita = _cita(estado="agendada")
+        cita["scheduled_at"] = self.ANTES
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior=self.ANTES,
+            cita=cita,
+        )
+
+        assert provider.enviados == []
+
+    async def test_mover_una_SOLICITADA_no_avisa(self):
+        """Mover una solicitud es el taller proponiendo otra hora, y eso ya va
+        con su propio flujo."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="solicitada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(estado="solicitada"),
+        )
+
+        assert provider.enviados == []
+
+    async def test_estado_y_hora_a_la_vez_mandan_UN_solo_mensaje(self):
+        """Aceptar y mover en el mismo gesto es un caso real. Dos WhatsApps
+        seguidos se ven descuidados: gana el aviso del estado."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="solicitada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(estado="agendada"),
+        )
+
+        assert len(provider.enviados) == 1
+        assert "confirmada" in provider.enviados[0].body
+
+    async def test_sin_hora_anterior_no_avisa(self):
+        """Un PATCH que no tocó la hora no manda `scheduled_at_anterior`."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider, anterior="agendada", cita=self._movida()
+        )
+
+        assert provider.enviados == []
+
+    async def test_la_hora_anterior_como_TEXTO_tambien_sirve(self):
+        """PostgREST devuelve timestamptz como string. Comparar un string
+        contra un datetime no falla: da "distinto" siempre, y mandaría un
+        aviso en cada PATCH aunque nadie moviera nada."""
+        provider = FakeProvider()
+        cita = _cita(estado="agendada")
+        cita["scheduled_at"] = self.ANTES
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior="2026-09-15T13:00:00+00:00",
+            cita=cita,
+        )
+
+        assert provider.enviados == []
+
+    async def test_una_cita_movida_sin_telefono_no_lanza(self):
+        provider = FakeProvider()
+        cita = self._movida()
+        cita["customer"] = {}
+        cita["solicitante_telefono"] = None
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior=self.ANTES,
+            cita=cita,
+        )
+
+        assert provider.enviados == []

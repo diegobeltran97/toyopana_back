@@ -221,10 +221,10 @@ class TestAvisoAlCliente:
     def avisos(self, monkeypatch):
         registrados = []
 
-        async def fake_avisar(provider, *, anterior, cita):
+        async def fake_avisar(provider, *, anterior, cita, **kwargs):
             registrados.append((anterior, cita.get("status")))
 
-        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", fake_avisar)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_cita", fake_avisar)
         return registrados
 
     def test_aceptar_una_solicitud_dispara_el_aviso(self, monkeypatch, avisos):
@@ -267,12 +267,12 @@ class TestAvisoAlCliente:
         async def fake_get(org, cita_id):
             return {"status": "solicitada"}
 
-        async def explota(provider, *, anterior, cita):
+        async def explota(provider, *, anterior, cita, **kwargs):
             raise RuntimeError("whapi caída")
 
         monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
         monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
-        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", explota)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_cita", explota)
 
         # TestClient re-lanza las excepciones de las tareas de fondo, lo que
         # esconde el status code que el llamador recibió de verdad: en
@@ -349,7 +349,7 @@ class TestGenerarLinkDeAgenda:
 class TestElAvisoLlegaPorElEndpointCompleto:
     """Confirmar por la ruta HTTP realmente manda el mensaje.
 
-    La otra clase sustituye `avisar_cambio_de_estado` y solo comprueba que se
+    La otra clase sustituye `avisar_cambio_de_cita` y solo comprueba que se
     agenda la tarea. Eso dejó pasar el bug del enum: la tarea se agendaba con
     los argumentos correctos y la función real retornaba sin enviar.
 

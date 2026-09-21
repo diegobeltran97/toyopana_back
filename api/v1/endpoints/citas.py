@@ -26,7 +26,7 @@ from core.config import settings
 from services.agenda_token import TTL_HORAS_DEFAULT, crear_token, leer_token
 from integrations.messaging.base import MessagingProvider
 from integrations.messaging.factory import get_messaging_provider
-from services.cita_aviso import avisar_cambio_de_estado
+from services.cita_aviso import avisar_cambio_de_cita
 from schemas.cita import CitaCreate, CitaRead, CitaStatus, CitaUpdate
 from services import citas_service
 
@@ -185,20 +185,21 @@ async def update_cita(
     """
     organization_id = require_organization_id(current_user)
 
-    # El estado anterior, ANTES de tocar la fila: el aviso depende de de dónde
-    # viene el cambio, y después del update ese dato ya se perdió.
-    previo = await citas_service.estado_actual(organization_id, cita_id)
-    anterior = (previo or {}).get("status", "")
+    # La fila ANTES de tocarla: el aviso depende de de dónde viene el cambio —
+    # tanto el estado como la hora— y después del update esos datos se
+    # perdieron. `estado_actual` devuelve la fila entera, no solo el estado.
+    previo = await citas_service.estado_actual(organization_id, cita_id) or {}
 
     cita = await citas_service.update_cita(organization_id, cita_id, payload)
 
     # En segundo plano: el cambio ya se guardó y es la verdad, así que el 200
-    # no puede quedar esperando a que WhatsApp responda. avisar_cambio_de_estado
+    # no puede quedar esperando a que WhatsApp responda. avisar_cambio_de_cita
     # nunca lanza, de modo que un fallo suyo no puede tocar este status code.
     background.add_task(
-        avisar_cambio_de_estado,
+        avisar_cambio_de_cita,
         provider,
-        anterior=anterior,
+        anterior=previo.get("status", ""),
+        scheduled_at_anterior=previo.get("scheduled_at"),
         cita=cita.model_dump(),
     )
 
