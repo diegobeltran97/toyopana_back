@@ -442,3 +442,22 @@ class TestNoSeOfrecenHorasPasadas:
         dias = await DISPONIBILIDAD_REAL(ORG, 2)
 
         assert all(b["libre"] for b in dias[1]["bloques"])
+
+    async def test_cerca_de_medianoche_el_margen_cruza_al_dia_siguiente(
+        self, _repo, monkeypatch
+    ):
+        """Fija la rama `fecha < limite.date()` de `disponibilidad()`.
+
+        23:00 + 2 h de margen = 01:00 del día 16: el límite ya cae en el
+        calendario de mañana, así que hoy entero debe quedar bloqueado con
+        `time.max`. Ninguna otra prueba de esta clase llega tan tarde -- todas
+        las demás calculan un límite que sigue siendo hoy -- así que sin esta
+        prueba esa rama (o un `<` volteado a `<=`) podría romperse o
+        desaparecer sin que la suite se diera cuenta.
+        """
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 23, 0, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(not b["libre"] for b in dias[0]["bloques"])
+        assert dias[0]["abierto"] is True
