@@ -72,8 +72,16 @@ def _sin_db(monkeypatch):
             updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
         )
 
+    async def fake_servicios(organization_id):
+        llamadas.append(("servicios", organization_id))
+        return [
+            {"id": "44444444-4444-4444-4444-444444444444",
+             "name": "Cambio de amortiguadores", "duration_minutes": 120},
+        ]
+
     monkeypatch.setattr(agenda.agenda_service, "disponibilidad", fake_disponibilidad)
     monkeypatch.setattr(agenda.agenda_service, "solicitar_cita", fake_solicitar)
+    monkeypatch.setattr(agenda.agenda_service, "servicios_ofrecidos", fake_servicios)
     return llamadas
 
 
@@ -190,7 +198,9 @@ class TestReservar:
         assert self._reservar().status_code == 201
 
     def test_se_puede_indicar_un_servicio(self, _sin_db):
-        sid = "55555555-5555-5555-5555-555555555555"
+        # Tiene que ser un id del catálogo del doble (`fake_servicios`): desde
+        # el Step 8, uno ajeno se rechaza con 422 antes de llegar aquí.
+        sid = "44444444-4444-4444-4444-444444444444"
 
         self._reservar(service_type_id=sid)
 
@@ -461,3 +471,66 @@ class TestNoSeOfrecenHorasPasadas:
 
         assert all(not b["libre"] for b in dias[0]["bloques"])
         assert dias[0]["abierto"] is True
+
+
+class TestElCatalogoLlegaAlCliente:
+    """El selector de servicio tiene que salir del catálogo del taller, no de
+    una lista quemada en el frontend."""
+
+    def test_la_agenda_trae_los_servicios(self, _sin_db):
+        cuerpo = client.get(f"/api/public/agenda/{_token()}").json()
+
+        assert len(cuerpo["servicios"]) == 1
+
+    def test_cada_servicio_trae_lo_que_la_pantalla_necesita(self, _sin_db):
+        servicio = client.get(f"/api/public/agenda/{_token()}").json()["servicios"][0]
+
+        assert set(servicio) == {"id", "name", "duration_minutes"}
+
+    def test_el_catalogo_sale_de_la_organizacion_del_token(self, _sin_db):
+        client.get(f"/api/public/agenda/{_token()}")
+
+        assert ("servicios", ORG) in _sin_db
+
+    def test_un_catalogo_vacio_no_rompe_la_agenda(self, monkeypatch, _sin_db):
+        """Hoy `service_types` tiene cero filas en producción. La agenda tiene
+        que seguir funcionando: la página simplemente no muestra el selector."""
+        async def sin_servicios(organization_id):
+            return []
+
+        monkeypatch.setattr(agenda.agenda_service, "servicios_ofrecidos", sin_servicios)
+
+        respuesta = client.get(f"/api/public/agenda/{_token()}")
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["servicios"] == []
+
+
+class TestUnServicioAjenoNoSeAcepta:
+    """El `service_type_id` llega en el cuerpo, así que hay que comprobar que
+    pertenece al taller del token. Sin esto, conocer un UUID dejaría meter en
+    una cita un servicio de otro taller, con su duración."""
+
+    def _pedir(self, service_type_id):
+        return client.post(
+            f"/api/public/agenda/{_token()}/solicitar",
+            json={
+                "fecha": "2026-09-15",
+                "hora": "10:00",
+                "nombre": "Ana Torres",
+                "telefono": "68510658",
+                "service_type_id": service_type_id,
+            },
+        )
+
+    def test_un_servicio_del_catalogo_se_acepta(self, _sin_db):
+        assert self._pedir("44444444-4444-4444-4444-444444444444").status_code == 201
+
+    def test_un_servicio_que_no_esta_en_el_catalogo_da_422(self, _sin_db):
+        assert self._pedir("55555555-5555-5555-5555-555555555555").status_code == 422
+
+    def test_sin_servicio_se_acepta_igual(self, _sin_db):
+        """"Prefiero no decir" es una respuesta válida: obligar a clasificar el
+        problema antes de agendar pierde clientes que no saben cómo se llama
+        lo que les suena."""
+        assert self._pedir(None).status_code == 201

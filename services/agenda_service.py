@@ -148,3 +148,21 @@ async def solicitar_cita(
             solicitud_texto="Pedida desde la agenda web",
         ),
     )
+
+
+async def servicios_ofrecidos(organization_id: str) -> List[Dict[str, Any]]:
+    """El catálogo que la página pública le muestra al cliente.
+
+    Solo los activos, que es el default de `servicios()`: un servicio
+    desactivado no debe poder reservarse. La pantalla de ajustes es la única
+    que pide los inactivos, porque si no no habría forma de reactivarlos.
+    """
+    filas = await BusinessRulesRepository().servicios(organization_id)
+    return [
+        {
+            "id": fila["id"],
+            "name": fila["name"],
+            "duration_minutes": fila["duration_minutes"],
+        }
+        for fila in filas
+    ]
