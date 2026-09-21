@@ -297,3 +297,59 @@ class TestTextoDeHorario:
         semana = {1: {"is_open": True, "opens_at": time(12), "closes_at": time(13)}}
 
         assert "12:00 p.m. – 1:00 p.m." in texto_de_horario(semana)
+
+
+class TestBloquesQueYaPasaron:
+    """El filtro de horas pasadas.
+
+    `desde` entra como parámetro y no como `datetime.now()` adentro: este
+    módulo es puro, y meterle el reloj obligaría a parchear el tiempo en cada
+    una de sus pruebas.
+    """
+
+    def _martes(self):
+        return resolver_dia(MARTES, SEMANA)
+
+    def test_sin_desde_no_filtra_nada(self):
+        """El default conserva exactamente el comportamiento de antes."""
+        bloques = bloques_del_dia(self._martes())
+
+        assert all(b.libre for b in bloques)
+
+    def test_un_bloque_anterior_al_limite_no_esta_libre(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(8)).libre is False
+
+    def test_un_bloque_posterior_al_limite_sigue_libre(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(14)).libre is True
+
+    def test_el_bloque_justo_en_el_limite_sirve(self):
+        """Las 12:00 en punto con límite 12:00 se puede reservar: el límite ya
+        incluye el margen de anticipación."""
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(12)).libre is True
+
+    def test_un_limite_despues_del_cierre_deja_el_dia_sin_horas(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(23))
+
+        assert all(not b.libre for b in bloques)
+
+    def test_los_bloques_igual_se_devuelven_todos(self):
+        """Ocupados, no ausentes: mostrar el día con huecos explica por qué no
+        hay más opciones. Devolver solo los libres haría ver un día lleno como
+        si el taller no atendiera."""
+        bloques = bloques_del_dia(self._martes(), desde=time(23))
+
+        assert len(bloques) == 9
+
+    def test_el_filtro_se_combina_con_la_ocupacion(self):
+        """Una hora futura pero ocupada tampoco está libre."""
+        bloques = bloques_del_dia(
+            self._martes(), ocupacion={time(14): 1}, desde=time(12)
+        )
+
+        assert next(b for b in bloques if b.hora == time(14)).libre is False

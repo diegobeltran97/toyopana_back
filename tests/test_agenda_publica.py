@@ -18,10 +18,16 @@ import api.v1.endpoints.agenda_publica as agenda
 import services.agenda_service as agenda_service_module
 from schemas.cita import CitaRead, CitaStatus
 from services.agenda_token import crear_token
+from services.business_rules import PANAMA
 
 # La función real, capturada antes de que el fixture autouse la sustituya:
 # TestNaceComoSolicitud prueba su comportamiento, no el del doble.
 SOLICITAR_REAL = agenda_service_module.solicitar_cita
+
+# Igual que SOLICITAR_REAL: capturada antes de que el fixture autouse la
+# sustituya, porque TestNoSeOfrecenHorasPasadas prueba su cálculo de la hora
+# límite y con el doble no probaría nada.
+DISPONIBILIDAD_REAL = agenda_service_module.disponibilidad
 
 SECRETO = "un-secreto-largo-de-prueba"
 ORG = "11111111-1111-1111-1111-111111111111"
@@ -349,3 +355,90 @@ class TestNoEnsuciaElCRM:
         cita = await self._crear(monkeypatch)
 
         assert cita.solicitante_telefono == "+50768510658"
+
+
+class TestNoSeOfrecenHorasPasadas:
+    """A las 9 p.m. la página no puede seguir ofreciendo las 8 a.m. de hoy.
+
+    Prueba `disponibilidad()` de verdad con el repositorio parcheado: el punto
+    es justamente que el servicio calcule la hora límite.
+    """
+
+    @pytest.fixture
+    def _repo(self, monkeypatch):
+        """Un taller abierto de 8 a 17 todos los días, sin citas ni feriados."""
+        class FakeRepo:
+            async def semana(self, org):
+                return {
+                    d: {"is_open": True, "opens_at": time(8), "closes_at": time(17),
+                        "max_citas": None, "capacidad_simultanea": 1}
+                    for d in range(7)
+                }
+
+            async def excepciones(self, org, desde, hasta):
+                return {}
+
+            async def citas_que_ocupan(self, org, dia):
+                return []
+
+        monkeypatch.setattr(
+            agenda_service_module, "BusinessRulesRepository", FakeRepo
+        )
+
+    def _congelar(self, monkeypatch, momento):
+        """Fija `datetime.now(PANAMA)` sin tocar el resto de datetime."""
+        real = agenda_service_module.datetime
+
+        class FakeDatetime(real):
+            @classmethod
+            def now(cls, tz=None):
+                return momento
+
+        monkeypatch.setattr(agenda_service_module, "datetime", FakeDatetime)
+
+    async def test_a_las_nueve_de_la_noche_hoy_no_tiene_horas(
+        self, _repo, monkeypatch
+    ):
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(not b["libre"] for b in dias[0]["bloques"])
+
+    async def test_pero_el_dia_sigue_marcado_como_ABIERTO(
+        self, _repo, monkeypatch
+    ):
+        """El taller sí abrió hoy. La pantalla debe decir "no quedan horas",
+        no "cerrado" — son cosas distintas y el cliente las lee distinto."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert dias[0]["abierto"] is True
+
+    async def test_temprano_en_la_manana_estan_todas(self, _repo, monkeypatch):
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 5, 0, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 1)
+
+        assert all(b["libre"] for b in dias[0]["bloques"])
+
+    async def test_a_media_manana_el_margen_corre_el_primer_bloque(
+        self, _repo, monkeypatch
+    ):
+        """9:30 + 2 h de margen = 11:30, así que el primer bloque reservable
+        es el de las 12:00."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 9, 30, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 1)
+
+        libres = [b["hora"] for b in dias[0]["bloques"] if b["libre"]]
+        assert libres[0] == time(12)
+
+    async def test_manana_no_se_filtra(self, _repo, monkeypatch):
+        """El margen es de hoy. Mañana está entero disponible."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(b["libre"] for b in dias[1]["bloques"])

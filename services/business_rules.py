@@ -249,6 +249,7 @@ def bloques_del_dia(
     dia: DiaHabil,
     ocupacion: Optional[Mapping[time, int]] = None,
     citas_aceptadas: int = 0,
+    desde: Optional[time] = None,
 ) -> List[Bloque]:
     """Los bloques de una hora del día, marcando cuáles se pueden reservar.
 
@@ -259,6 +260,11 @@ def bloques_del_dia(
     `ocupacion` cuenta solo citas ACEPTADAS (agendada + confirmada). Las
     solicitudes pendientes no ocupan, o cinco personas pidiendo las 10 a.m.
     dejarían el bloque en rojo sin que el taller aceptara ninguna.
+
+    `desde` marca ocupado todo bloque anterior a esa hora. Entra como
+    parámetro y no se lee el reloj aquí: este módulo es puro, y esa pureza es
+    lo que hace que sus pruebas no dependan de qué hora sea. Quien sabe la
+    hora es `agenda_service.disponibilidad()`.
     """
     if not dia.abierto or dia.abre is None or dia.cierra is None:
         return []
@@ -274,7 +280,12 @@ def bloques_del_dia(
     while _mas_minutos(cursor.time(), BLOQUE_MINUTOS) <= fin:
         hora = cursor.time()
         hay_cupo = ocupacion.get(hora, 0) < dia.capacidad_simultanea
-        bloques.append(Bloque(hora=hora, libre=hay_cupo and not dia_lleno))
+        # `<` y no `<=`: la hora justo en el límite todavía se puede reservar,
+        # porque el límite ya viene con el margen de anticipación sumado.
+        ya_paso = desde is not None and hora < desde
+        bloques.append(
+            Bloque(hora=hora, libre=hay_cupo and not dia_lleno and not ya_paso)
+        )
         cursor = _mas_minutos(hora, BLOQUE_MINUTOS)
 
     return bloques

@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 # haría que el aviso dependa de que alguien más se acuerde de completarlo.
 INDICATIVO = "507"
 
+# Cuánta anticipación mínima pide el taller antes de una cita. Nadie sale
+# corriendo para llegar en quince minutos, y el taller necesita ver la
+# solicitud antes de que aparezca el carro.
+#
+# Constante con nombre y no columna: el número lo eligió el spec, no el
+# taller. Si resulta molesto, cambiarlo cuesta una línea — y si el taller
+# pide poder ajustarlo, ahí se vuelve columna.
+ANTICIPACION_MINIMA_MINUTOS = 120
+
 
 def normalizar_telefono(telefono: str) -> str:
     """Lo que la gente teclea -> E.164.
@@ -48,9 +57,18 @@ async def disponibilidad(organization_id: str, dias: int) -> List[Dict[str, Any]
     Los bloques ocupados igual se devuelven, marcados: mostrar un día con
     huecos explica por qué no hay más opciones; devolver solo los libres hace
     ver un día medio vacío como si el taller no atendiera.
+
+    Aquí vive el reloj. `bloques_del_dia()` es puro y recibe la hora límite ya
+    calculada.
     """
     repo = BusinessRulesRepository()
-    hoy = date.today()
+
+    # En hora de Panamá y no `date.today()`: con el servidor en UTC, a las
+    # 00:30 UTC ya es "mañana" mientras en Panamá siguen siendo las 7:30 p.m.
+    # de hoy, y la agenda se saltaría el día en curso entero.
+    ahora = datetime.now(PANAMA)
+    hoy = ahora.date()
+    limite = ahora + timedelta(minutes=ANTICIPACION_MINIMA_MINUTOS)
 
     semana = await repo.semana(organization_id)
     excepciones = await repo.excepciones(organization_id, hoy, hoy + timedelta(days=dias))
@@ -64,8 +82,20 @@ async def disponibilidad(organization_id: str, dias: int) -> List[Dict[str, Any]
             resultado.append({"fecha": fecha, "abierto": False, "bloques": []})
             continue
 
+        # `time.max` cuando el margen ya empujó el límite al día siguiente: el
+        # día de hoy entero queda sin horas, pero sigue ABIERTO. El taller sí
+        # abrió; la pantalla debe decir "no quedan horas", no "cerrado".
+        if fecha < limite.date():
+            desde = time.max
+        elif fecha == limite.date():
+            desde = limite.time()
+        else:
+            desde = None
+
         citas = await repo.citas_que_ocupan(organization_id, fecha)
-        bloques = bloques_del_dia(dia, ocupacion_de_citas(citas), len(citas))
+        bloques = bloques_del_dia(
+            dia, ocupacion_de_citas(citas), len(citas), desde=desde
+        )
 
         resultado.append({
             "fecha": fecha,
