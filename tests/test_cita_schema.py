@@ -63,6 +63,37 @@ def test_read_accepts_embedded_customer_and_null_bridge():
     assert cita.customer.name == "Juan Pérez"
 
 
+def test_read_flattens_the_catalog_service_name_from_the_embed():
+    """PostgREST entrega el catálogo anidado (repositories/citas.py embebe
+    `service_types(name)`); CitaRead lo aplana a `service_type_name` para que
+    el panel no tenga que mirar dos campos distintos por lo mismo."""
+    cita = CitaRead(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        scheduled_at=datetime.now(timezone.utc),
+        status="agendada",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        service_types={"name": "Cambio de amortiguadores"},
+    )
+    assert cita.service_type_name == "Cambio de amortiguadores"
+
+
+def test_read_service_type_name_is_none_without_a_catalog_service():
+    """La mayoría de las citas hoy no tiene service_type_id: ni el embed nulo
+    de PostgREST ni su ausencia deben reventar la lectura."""
+    cita = CitaRead(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        scheduled_at=datetime.now(timezone.utc),
+        status="agendada",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        service_types=None,
+    )
+    assert cita.service_type_name is None
+
+
 def test_read_tolerates_customer_without_phone():
     """PostgREST returns phone: null for customers with no number on file."""
     cita = CitaRead(

@@ -153,9 +153,10 @@ async def solicitar_cita(
 async def servicios_ofrecidos(organization_id: str) -> List[Dict[str, Any]]:
     """El catálogo que la página pública le muestra al cliente.
 
-    Solo los activos, que es el default de `servicios()`: un servicio
-    desactivado no debe poder reservarse. La pantalla de ajustes es la única
-    que pide los inactivos, porque si no no habría forma de reactivarlos.
+    Solo los activos: `BusinessRulesRepository.servicios()` filtra
+    `active: is.true` siempre, sin parámetro para pedir otra cosa -- un
+    servicio desactivado no debe poder reservarse, y hoy tampoco la pantalla
+    de ajustes puede recuperar los inactivos.
     """
     filas = await BusinessRulesRepository().servicios(organization_id)
     return [

@@ -450,6 +450,22 @@ class TestAvisoAlReprogramar:
 
         assert provider.enviados == []
 
+    async def test_el_mensaje_no_tiene_puntuacion_repetida(self):
+        """`_cuando_legible()` ya termina en "a.m."/"p.m." para las dos horas
+        que lleva este mensaje; un punto detrás de cualquiera deja "2:00
+        p.m..", que se ve descuidado en lo primero que lee un cliente
+        reprogramado."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cambio_de_cita(
+            provider,
+            anterior="agendada",
+            scheduled_at_anterior=self.ANTES,
+            cita=self._movida(),
+        )
+
+        assert ".." not in provider.enviados[0].body
+
     async def test_una_cita_movida_sin_telefono_no_lanza(self):
         provider = FakeProvider()
         cita = self._movida()

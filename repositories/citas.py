@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 # The calendar needs the customer's name next to each cita; PostgREST embeds it
 # through the citas_customer_id_fkey relationship in the same round trip.
-CITA_SELECT = "*,customer:customers(id,name,phone)"
+#
+# service_types(name) does the same for the catalog service, via
+# service_type_id -- same embed shape repositories/business_rules.py already
+# uses for duration_minutes. schemas/cita.py flattens it into
+# `service_type_name`; a cita without a catalog service embeds `None`.
+CITA_SELECT = "*,customer:customers(id,name,phone),service_types(name)"
 
 
 class CitaRepository:

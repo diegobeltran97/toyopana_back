@@ -119,9 +119,11 @@ _MOVIBLES = {"agendada", "confirmada"}
 
 
 def _mensaje_de_cambio_de_hora(nombre: str, antes: str, ahora: str) -> str:
+    # `antes` y `ahora` ya terminan en "a.m."/"p.m." (_cuando_legible): un punto
+    # detrás de cualquiera de los dos deja "8:00 a.m..", que se ve descuidado.
     return (
-        f"📅 Hola {nombre}, movimos tu cita para el {ahora}.\n\n"
-        f"Antes era el {antes}. Si no te sirve, escríbenos y buscamos otra."
+        f"📅 Hola {nombre}, movimos tu cita para el {ahora}\n\n"
+        f"Antes era el {antes} — si no te sirve, escríbenos y buscamos otra."
     )
 
 

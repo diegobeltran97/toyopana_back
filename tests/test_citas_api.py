@@ -25,14 +25,15 @@ app.include_router(citas_endpoint.router, prefix="/api/citas")
 client = TestClient(app)
 
 
-def _canned(status=CitaStatus.agendada):
+def _canned(status=CitaStatus.agendada, scheduled_at=None, service_type_name=None):
     now = datetime.now(timezone.utc)
     return CitaRead(
         id=uuid.UUID(CITA_ID),
         organization_id=uuid.UUID(ORG),
         customer_id=uuid.UUID(CUSTOMER_ID),
-        scheduled_at=datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
+        scheduled_at=scheduled_at or datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
         service_type="Cambio de aceite",
+        service_type_name=service_type_name,
         status=status,
         created_at=now,
         updated_at=now,
@@ -82,6 +83,21 @@ def test_list_passes_dates_through_and_returns_citas(monkeypatch):
     assert str(seen["date_from"]) == "2026-09-01"
     assert str(seen["date_to"]) == "2026-09-30"
     assert seen["status"] is None
+
+
+def test_list_surfaces_the_catalog_service_name(monkeypatch):
+    """El panel necesita saber a qué viene el carro; el nombre del catálogo
+    (aplanado desde el embed de service_type_id) viaja junto al resto de la
+    cita, en vez de perderse en el camino."""
+    async def fake_list(organization_id, date_from, date_to, status=None):
+        return [_canned(service_type_name="Cambio de amortiguadores")]
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "list_citas", fake_list)
+
+    response = client.get("/api/citas", params={"from": "2026-09-01", "to": "2026-09-30"})
+
+    assert response.status_code == 200
+    assert response.json()[0]["service_type_name"] == "Cambio de amortiguadores"
 
 
 def test_list_forwards_status_filter(monkeypatch):
@@ -409,3 +425,39 @@ class TestElAvisoLlegaPorElEndpointCompleto:
         self._confirmar(monkeypatch, anterior="agendada")
 
         assert proveedor == []
+
+    def test_reprogramar_una_cita_agendada_envia_un_mensaje_con_ambas_horas(
+        self, monkeypatch, proveedor
+    ):
+        """Todo doble de `estado_actual` en este archivo devolvía `{"status":
+        ...}` sin `scheduled_at`, así que `previo.get("scheduled_at")` era
+        siempre None y la rama de "cita movida" nunca se ejercitaba de punta a
+        punta -- ni siquiera aquí, la clase que existe justo para eso. Con un
+        doble que sí trae la hora anterior, invertir por accidente los
+        argumentos de `avisar_cambio_de_cita` en el endpoint (mandar la hora
+        NUEVA como anterior) rompe este test."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(
+                status=CitaStatus.agendada,
+                scheduled_at=datetime(2026, 9, 16, 19, 0, tzinfo=timezone.utc),  # 2:00 p.m. Panamá
+            )
+
+        async def fake_get(org, cita_id):
+            return {
+                "status": "agendada",
+                "scheduled_at": "2026-09-15T13:00:00+00:00",  # 8:00 a.m. Panamá
+            }
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        r = client.patch(
+            f"/api/citas/{CITA_ID}",
+            json={"scheduled_at": "2026-09-16T14:00:00-05:00"},
+        )
+
+        assert r.status_code == 200
+        assert len(proveedor) == 1
+        cuerpo = proveedor[0].body
+        assert "8:00 a.m." in cuerpo
+        assert "2:00 p.m." in cuerpo

@@ -9,9 +9,9 @@ exists, but nothing writes it in this iteration.
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class CitaStatus(str, Enum):
@@ -76,6 +76,11 @@ class CitaRead(BaseModel):
     status: CitaStatus
     converted_order_id: Optional[uuid.UUID] = None
     service_type_id: Optional[uuid.UUID] = None
+    # Nombre del servicio del catálogo, cuando `service_type_id` apunta a uno.
+    # Ambos son nullable y la mayoría de las citas hoy no tiene service_type_id
+    # -- el panel debe mostrar este nombre cuando exista, el `service_type` de
+    # texto libre cuando no, y nada cuando ninguno de los dos está.
+    service_type_name: Optional[str] = None
     created_via: Optional[str] = None
     solicitud_texto: Optional[str] = None
     solicitante_nombre: Optional[str] = None
@@ -85,3 +90,17 @@ class CitaRead(BaseModel):
     customer: Optional[CitaCustomer] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _aplanar_service_types(cls, data: Any) -> Any:
+        """PostgREST entrega el catálogo anidado: `{"service_types": {"name":
+        ...}}` (repositories/citas.py embebe `service_types(name)` vía
+        service_type_id). Se aplana aquí a `service_type_name` para que quien
+        consuma CitaRead no tenga que mirar dos campos distintos por lo mismo.
+        """
+        if isinstance(data, dict) and "service_type_name" not in data:
+            embebido = data.get("service_types")
+            if isinstance(embebido, dict):
+                data = {**data, "service_type_name": embebido.get("name")}
+        return data

@@ -106,6 +106,13 @@ async def test_create_posts_row_and_returns_it(monkeypatch):
     assert call["headers"]["Prefer"] == "return=representation"
 
 
+def test_select_includes_the_catalog_service_name():
+    """El panel necesita saber a qué viene el carro; el nombre del servicio de
+    catálogo se trae en el mismo round trip vía el embed de service_type_id,
+    igual que ya hace repositories/business_rules.py con la duración."""
+    assert "service_types(name)" in citas_repo_module.CITA_SELECT
+
+
 async def test_list_range_filters_org_and_window(monkeypatch):
     _patch_client(monkeypatch, FakeResponse(json_data=[{"id": CITA_ID}]))
     repo = CitaRepository()
