@@ -20,6 +20,7 @@ from services.business_rules import (
     bloques_del_dia,
     bloques_que_ocupa,
     cabe_antes_del_cierre,
+    feriados_de_panama,
     ocupacion_de_citas,
     resolver_dia,
     texto_de_horario,
@@ -353,3 +354,49 @@ class TestBloquesQueYaPasaron:
         )
 
         assert next(b for b in bloques if b.hora == time(14)).libre is False
+
+
+class TestFeriadosDePanama:
+    """El calendario que carga la pantalla de ajustes de una vez.
+
+    Las fechas móviles son el punto: Carnaval y Viernes Santo dependen de la
+    Pascua, así que una lista quemada queda vieja el año siguiente sin que
+    nadie lo note hasta que el taller abre un lunes de Carnaval.
+    """
+
+    def test_el_ano_trae_los_catorce_feriados(self):
+        assert len(feriados_de_panama(2026)) == 14
+
+    def test_los_fijos_caen_donde_deben(self):
+        fechas = dict(feriados_de_panama(2026))
+
+        assert fechas[date(2026, 1, 1)] == "Año Nuevo"
+        assert fechas[date(2026, 1, 9)] == "Día de los Mártires"
+        assert fechas[date(2026, 12, 25)] == "Navidad"
+
+    def test_carnaval_y_viernes_santo_se_mueven_con_la_pascua(self):
+        """2026: Pascua el 5 de abril. 2027: el 28 de marzo."""
+        fechas_2026 = dict(feriados_de_panama(2026))
+        fechas_2027 = dict(feriados_de_panama(2027))
+
+        assert fechas_2026[date(2026, 2, 16)] == "Lunes de Carnaval"
+        assert fechas_2026[date(2026, 2, 17)] == "Martes de Carnaval"
+        assert fechas_2026[date(2026, 4, 3)] == "Viernes Santo"
+
+        assert fechas_2027[date(2027, 2, 8)] == "Lunes de Carnaval"
+        assert fechas_2027[date(2027, 2, 9)] == "Martes de Carnaval"
+        assert fechas_2027[date(2027, 3, 26)] == "Viernes Santo"
+
+    def test_viene_ordenada_por_fecha(self):
+        """La pantalla la muestra tal cual; ordenarla en el front sería otra
+        copia de la misma decisión."""
+        feriados = feriados_de_panama(2026)
+
+        assert feriados == sorted(feriados)
+
+    def test_ninguna_fecha_se_repite(self):
+        """Dos motivos en la misma fecha reventarían el UNIQUE
+        (organization_id, date) de business_calendar al cargarlos."""
+        feriados = feriados_de_panama(2026)
+
+        assert len({fecha for fecha, _ in feriados}) == len(feriados)

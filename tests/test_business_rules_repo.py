@@ -16,6 +16,14 @@ import repositories.business_rules as repo_module
 from repositories.business_rules import BusinessRulesRepository
 
 ORG = "11111111-1111-1111-1111-111111111111"
+SERVICIO = "33333333-3333-3333-3333-333333333333"
+FILA_SERVICIO = {
+    "id": SERVICIO,
+    "name": "Alineación",
+    "duration_minutes": 90,
+    "active": True,
+    "sort_order": 0,
+}
 
 
 class FakeResponse:
@@ -31,7 +39,7 @@ class FakeResponse:
 
 
 class FakeAsyncClient:
-    """Records every GET and answers with canned rows, keyed by table name."""
+    """Records every request and answers with canned rows, keyed by table name."""
 
     calls: list = []
 
@@ -46,6 +54,27 @@ class FakeAsyncClient:
 
     async def get(self, url, params=None, headers=None):
         FakeAsyncClient.calls.append({"url": url, "params": params})
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def patch(self, url, json=None, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": json, "headers": headers}
+        )
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def post(self, url, json=None, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": json, "headers": headers}
+        )
+        tabla = url.rsplit("/", 1)[-1]
+        return FakeResponse(self._por_tabla.get(tabla, []))
+
+    async def delete(self, url, params=None, headers=None):
+        FakeAsyncClient.calls.append(
+            {"url": url, "params": params, "json": None, "headers": headers}
+        )
         tabla = url.rsplit("/", 1)[-1]
         return FakeResponse(self._por_tabla.get(tabla, []))
 
@@ -185,3 +214,118 @@ class TestServicios:
         await BusinessRulesRepository().servicios(ORG)
 
         assert FakeAsyncClient.calls[-1]["params"]["active"] == "is.true"
+
+    async def test_la_pantalla_de_ajustes_puede_pedir_los_inactivos(self, _sin_red):
+        """Un servicio desactivado tiene que seguir viéndose en ajustes o no
+        habría forma de reactivarlo."""
+        _sin_red({"service_types": []})
+
+        await BusinessRulesRepository().servicios(ORG, incluir_inactivos=True)
+
+        assert "active" not in FakeAsyncClient.calls[-1]["params"]
+
+    async def test_pide_la_columna_active(self, _sin_red):
+        """Sin ella ServicioRead reporta active=True por su default y la
+        pantalla dibujaría todos los interruptores encendidos."""
+        _sin_red({"service_types": []})
+
+        await BusinessRulesRepository().servicios(ORG, incluir_inactivos=True)
+
+        assert "active" in FakeAsyncClient.calls[-1]["params"]["select"]
+
+
+class TestActualizarServicio:
+    async def test_filtra_por_id_y_por_organizacion(self, _sin_red):
+        """Sin el filtro de organización, conocer un UUID bastaría para
+        editarle el catálogo a otro taller."""
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        params = FakeAsyncClient.calls[-1]["params"]
+        assert params["id"] == f"eq.{SERVICIO}"
+        assert params["organization_id"] == f"eq.{ORG}"
+
+    async def test_manda_solo_los_campos_que_cambiaron(self, _sin_red):
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        assert FakeAsyncClient.calls[-1]["json"] == {"duration_minutes": 90}
+
+    async def test_devuelve_la_fila_actualizada(self, _sin_red):
+        _sin_red({"service_types": [FILA_SERVICIO]})
+
+        fila = await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"duration_minutes": 90}
+        )
+
+        assert fila["duration_minutes"] == 90
+
+    async def test_sin_fila_devuelve_none(self, _sin_red):
+        """PostgREST responde 200 con lista vacía cuando el filtro no encuentra
+        nada: es un 404, no un error."""
+        _sin_red({"service_types": []})
+
+        fila = await BusinessRulesRepository().actualizar_servicio(
+            ORG, SERVICIO, {"name": "X"}
+        )
+
+        assert fila is None
+
+
+class TestBorrarDiaEspecial:
+    async def test_filtra_por_organizacion_y_fecha(self, _sin_red):
+        _sin_red({"business_calendar": [{"date": "2026-01-09"}]})
+
+        await BusinessRulesRepository().borrar_dia_especial(ORG, date(2026, 1, 9))
+
+        params = FakeAsyncClient.calls[-1]["params"]
+        assert params["organization_id"] == f"eq.{ORG}"
+        assert params["date"] == "eq.2026-01-09"
+
+    async def test_una_fecha_sin_excepcion_devuelve_false(self, _sin_red):
+        _sin_red({"business_calendar": []})
+
+        borrado = await BusinessRulesRepository().borrar_dia_especial(
+            ORG, date(2026, 1, 9)
+        )
+
+        assert borrado is False
+
+
+class TestAgregarDiasEspeciales:
+    async def test_no_pisa_lo_que_el_taller_ya_ajusto(self, _sin_red):
+        """ignore-duplicates y no merge: si el taller abrió medio día el 9 de
+        enero, recargar los feriados no debe deshacérselo."""
+        _sin_red({"business_calendar": [{"date": "2026-01-01"}]})
+
+        await BusinessRulesRepository().agregar_dias_especiales(
+            ORG, [{"date": "2026-01-01", "is_open": False, "reason": "Año Nuevo"}]
+        )
+
+        prefer = FakeAsyncClient.calls[-1]["headers"]["Prefer"]
+        assert "ignore-duplicates" in prefer
+        assert "merge-duplicates" not in prefer
+
+    async def test_le_pone_la_organizacion_a_cada_fila(self, _sin_red):
+        _sin_red({"business_calendar": []})
+
+        await BusinessRulesRepository().agregar_dias_especiales(
+            ORG, [{"date": "2026-01-01", "is_open": False, "reason": "Año Nuevo"}]
+        )
+
+        assert FakeAsyncClient.calls[-1]["json"][0]["organization_id"] == ORG
+
+    async def test_una_lista_vacia_no_llama_a_la_base(self, _sin_red):
+        """Un POST con lista vacía es un viaje a Supabase que no hace nada."""
+        _sin_red({"business_calendar": []})
+
+        agregados = await BusinessRulesRepository().agregar_dias_especiales(ORG, [])
+
+        assert agregados == 0
+        assert FakeAsyncClient.calls == []
