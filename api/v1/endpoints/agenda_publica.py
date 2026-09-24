@@ -56,8 +56,23 @@ class DiaOut(BaseModel):
     bloques: List[BloqueOut]
 
 
+class ServicioOut(BaseModel):
+    """Un servicio del catálogo, como lo ve quien abre el link.
+
+    Sin `active`: si llegó hasta aquí, está activo. Mandar el campo invitaría
+    a que la pantalla lo filtre otra vez, duplicando la decisión.
+    """
+
+    id: str
+    name: str
+    duration_minutes: int
+
+
 class AgendaOut(BaseModel):
     dias: List[DiaOut]
+    # El catálogo viaja con la agenda y no en otra llamada: la pantalla los
+    # necesita juntos para pintarse, y dos viajes son latencia sin nada a cambio.
+    servicios: List[ServicioOut] = []
 
 
 class SolicitudIn(BaseModel):
@@ -142,7 +157,12 @@ async def ver_agenda(
     datos = _verificar(token)
 
     resultado = await agenda_service.disponibilidad(datos.organization_id, dias)
-    return AgendaOut(dias=[DiaOut(**d) for d in resultado])
+    servicios = await agenda_service.servicios_ofrecidos(datos.organization_id)
+
+    return AgendaOut(
+        dias=[DiaOut(**d) for d in resultado],
+        servicios=[ServicioOut(**s) for s in servicios],
+    )
 
 
 @router.post(
@@ -158,6 +178,17 @@ async def solicitar(
 ) -> SolicitudOut:
     """Registra la solicitud. NO agenda: el taller la confirma después."""
     datos = _verificar(token)
+
+    # El `service_type_id` viene del cuerpo, así que hay que comprobar que es
+    # de este taller. Sin esto, conocer un UUID dejaría meterle a una cita un
+    # servicio ajeno — con su duración, que es lo que decide cuánto ocupa.
+    if solicitud.service_type_id is not None:
+        catalogo = await agenda_service.servicios_ofrecidos(datos.organization_id)
+        if solicitud.service_type_id not in {s["id"] for s in catalogo}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ese servicio no está disponible",
+            )
 
     cita = await agenda_service.solicitar_cita(
         organization_id=datos.organization_id,

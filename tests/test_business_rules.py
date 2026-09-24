@@ -20,6 +20,7 @@ from services.business_rules import (
     bloques_del_dia,
     bloques_que_ocupa,
     cabe_antes_del_cierre,
+    feriados_de_panama,
     ocupacion_de_citas,
     resolver_dia,
     texto_de_horario,
@@ -297,3 +298,105 @@ class TestTextoDeHorario:
         semana = {1: {"is_open": True, "opens_at": time(12), "closes_at": time(13)}}
 
         assert "12:00 p.m. – 1:00 p.m." in texto_de_horario(semana)
+
+
+class TestBloquesQueYaPasaron:
+    """El filtro de horas pasadas.
+
+    `desde` entra como parámetro y no como `datetime.now()` adentro: este
+    módulo es puro, y meterle el reloj obligaría a parchear el tiempo en cada
+    una de sus pruebas.
+    """
+
+    def _martes(self):
+        return resolver_dia(MARTES, SEMANA)
+
+    def test_sin_desde_no_filtra_nada(self):
+        """El default conserva exactamente el comportamiento de antes."""
+        bloques = bloques_del_dia(self._martes())
+
+        assert all(b.libre for b in bloques)
+
+    def test_un_bloque_anterior_al_limite_no_esta_libre(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(8)).libre is False
+
+    def test_un_bloque_posterior_al_limite_sigue_libre(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(14)).libre is True
+
+    def test_el_bloque_justo_en_el_limite_sirve(self):
+        """Las 12:00 en punto con límite 12:00 se puede reservar: el límite ya
+        incluye el margen de anticipación."""
+        bloques = bloques_del_dia(self._martes(), desde=time(12))
+
+        assert next(b for b in bloques if b.hora == time(12)).libre is True
+
+    def test_un_limite_despues_del_cierre_deja_el_dia_sin_horas(self):
+        bloques = bloques_del_dia(self._martes(), desde=time(23))
+
+        assert all(not b.libre for b in bloques)
+
+    def test_los_bloques_igual_se_devuelven_todos(self):
+        """Ocupados, no ausentes: mostrar el día con huecos explica por qué no
+        hay más opciones. Devolver solo los libres haría ver un día lleno como
+        si el taller no atendiera."""
+        bloques = bloques_del_dia(self._martes(), desde=time(23))
+
+        assert len(bloques) == 9
+
+    def test_el_filtro_se_combina_con_la_ocupacion(self):
+        """Una hora futura pero ocupada tampoco está libre."""
+        bloques = bloques_del_dia(
+            self._martes(), ocupacion={time(14): 1}, desde=time(12)
+        )
+
+        assert next(b for b in bloques if b.hora == time(14)).libre is False
+
+
+class TestFeriadosDePanama:
+    """El calendario que carga la pantalla de ajustes de una vez.
+
+    Las fechas móviles son el punto: Carnaval y Viernes Santo dependen de la
+    Pascua, así que una lista quemada queda vieja el año siguiente sin que
+    nadie lo note hasta que el taller abre un lunes de Carnaval.
+    """
+
+    def test_el_ano_trae_los_catorce_feriados(self):
+        assert len(feriados_de_panama(2026)) == 14
+
+    def test_los_fijos_caen_donde_deben(self):
+        fechas = dict(feriados_de_panama(2026))
+
+        assert fechas[date(2026, 1, 1)] == "Año Nuevo"
+        assert fechas[date(2026, 1, 9)] == "Día de los Mártires"
+        assert fechas[date(2026, 12, 25)] == "Navidad"
+
+    def test_carnaval_y_viernes_santo_se_mueven_con_la_pascua(self):
+        """2026: Pascua el 5 de abril. 2027: el 28 de marzo."""
+        fechas_2026 = dict(feriados_de_panama(2026))
+        fechas_2027 = dict(feriados_de_panama(2027))
+
+        assert fechas_2026[date(2026, 2, 16)] == "Lunes de Carnaval"
+        assert fechas_2026[date(2026, 2, 17)] == "Martes de Carnaval"
+        assert fechas_2026[date(2026, 4, 3)] == "Viernes Santo"
+
+        assert fechas_2027[date(2027, 2, 8)] == "Lunes de Carnaval"
+        assert fechas_2027[date(2027, 2, 9)] == "Martes de Carnaval"
+        assert fechas_2027[date(2027, 3, 26)] == "Viernes Santo"
+
+    def test_viene_ordenada_por_fecha(self):
+        """La pantalla la muestra tal cual; ordenarla en el front sería otra
+        copia de la misma decisión."""
+        feriados = feriados_de_panama(2026)
+
+        assert feriados == sorted(feriados)
+
+    def test_ninguna_fecha_se_repite(self):
+        """Dos motivos en la misma fecha reventarían el UNIQUE
+        (organization_id, date) de business_calendar al cargarlos."""
+        feriados = feriados_de_panama(2026)
+
+        assert len({fecha for fecha, _ in feriados}) == len(feriados)

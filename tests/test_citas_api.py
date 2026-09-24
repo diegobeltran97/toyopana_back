@@ -14,7 +14,10 @@ from fastapi.testclient import TestClient
 
 import api.v1.endpoints.citas as citas_endpoint
 from api.deps import get_current_user
+from core.result import Result
+from integrations.messaging.factory import get_messaging_provider
 from schemas.cita import CitaCustomer, CitaRead, CitaStatus
+from schemas.messaging import SentMessage
 
 ORG = "11111111-1111-1111-1111-111111111111"
 CITA_ID = "22222222-2222-2222-2222-222222222222"
@@ -25,19 +28,47 @@ app.include_router(citas_endpoint.router, prefix="/api/citas")
 client = TestClient(app)
 
 
-def _canned(status=CitaStatus.agendada):
+def _canned(status=CitaStatus.agendada, scheduled_at=None, service_type_name=None):
     now = datetime.now(timezone.utc)
     return CitaRead(
         id=uuid.UUID(CITA_ID),
         organization_id=uuid.UUID(ORG),
         customer_id=uuid.UUID(CUSTOMER_ID),
-        scheduled_at=datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
+        scheduled_at=scheduled_at or datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
         service_type="Cambio de aceite",
+        service_type_name=service_type_name,
         status=status,
         created_at=now,
         updated_at=now,
         customer=CitaCustomer(id=uuid.UUID(CUSTOMER_ID), name="Juan Pérez", phone="+50761234567"),
     )
+
+
+class FakeProvider:
+    """El WhatsApp que NO sale de aquí.
+
+    `get_messaging_provider` construye un WhapiProvider con el token de
+    producción de app/.env, y POST y PATCH encolan el aviso como background
+    task -- que TestClient ejecuta después de la respuesta. Sin este override
+    correr la suite le manda mensajes reales a los teléfonos de prueba, y
+    WHATSAPP_ALLOWED_NUMBERS no está configurado, así que la allowlist no
+    frena nada.
+    """
+
+    def __init__(self):
+        self.enviados = []
+
+    async def send_text(self, msg):
+        self.enviados.append(msg)
+        return Result.success(SentMessage(id="m1", to=msg.phone, status="sent"))
+
+
+@pytest.fixture(autouse=True)
+def provider():
+    """El provider falso, disponible para inspeccionar lo que se envió."""
+    fake = FakeProvider()
+    app.dependency_overrides[get_messaging_provider] = lambda: fake
+    return fake
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +113,21 @@ def test_list_passes_dates_through_and_returns_citas(monkeypatch):
     assert str(seen["date_from"]) == "2026-09-01"
     assert str(seen["date_to"]) == "2026-09-30"
     assert seen["status"] is None
+
+
+def test_list_surfaces_the_catalog_service_name(monkeypatch):
+    """El panel necesita saber a qué viene el carro; el nombre del catálogo
+    (aplanado desde el embed de service_type_id) viaja junto al resto de la
+    cita, en vez de perderse en el camino."""
+    async def fake_list(organization_id, date_from, date_to, status=None):
+        return [_canned(service_type_name="Cambio de amortiguadores")]
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "list_citas", fake_list)
+
+    response = client.get("/api/citas", params={"from": "2026-09-01", "to": "2026-09-30"})
+
+    assert response.status_code == 200
+    assert response.json()[0]["service_type_name"] == "Cambio de amortiguadores"
 
 
 def test_list_forwards_status_filter(monkeypatch):
@@ -134,6 +180,55 @@ def test_create_returns_201(monkeypatch):
     assert seen["customer_id"] == CUSTOMER_ID
 
 
+def test_create_confirms_the_cita_to_the_customer(monkeypatch, provider):
+    """Agendar por el cliente le manda el WhatsApp de confirmación.
+
+    La cita se acordó por teléfono o en el mostrador; sin este mensaje la
+    persona se va sin nada escrito de cuándo tiene que volver.
+    """
+
+    async def fake_create(organization_id, data):
+        return _canned()
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "create_cita", fake_create)
+
+    response = client.post(
+        "/api/citas",
+        json={
+            "customer_id": CUSTOMER_ID,
+            "scheduled_at": "2026-09-10T15:00:00-05:00",
+        },
+    )
+
+    assert response.status_code == 201
+    assert len(provider.enviados) == 1
+    assert provider.enviados[0].phone == "+50761234567"
+    assert "confirmada" in provider.enviados[0].body
+
+
+def test_create_does_not_message_a_web_request(monkeypatch, provider):
+    """Una cita que nace 'solicitada' viene de la agenda pública: todavía no
+    está aceptada y la página ya dijo que queda pendiente. Confirmarla aquí
+    prometería una hora que el taller no ha mirado."""
+
+    async def fake_create(organization_id, data):
+        return _canned(status=CitaStatus.solicitada)
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "create_cita", fake_create)
+
+    response = client.post(
+        "/api/citas",
+        json={
+            "customer_id": CUSTOMER_ID,
+            "scheduled_at": "2026-09-10T15:00:00-05:00",
+            "status": "solicitada",
+        },
+    )
+
+    assert response.status_code == 201
+    assert provider.enviados == []
+
+
 def test_create_ignores_an_organization_id_in_the_body(monkeypatch):
     """Tenancy is not negotiable from the client side."""
     seen = {}
@@ -169,6 +264,111 @@ def test_patch_returns_updated_cita(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "confirmada"
+
+
+# ---------------------------------------------------------------------------
+# El servicio del catálogo.
+#
+# El modal del taller pasó de un campo de texto libre a escoger del catálogo,
+# así que el id viaja en el cuerpo y hay que comprobar de quién es: el que
+# llama está autenticado contra SU organización, no contra todas.
+# ---------------------------------------------------------------------------
+
+SERVICIO_ID = "44444444-4444-4444-4444-444444444444"
+SERVICIO_AJENO = "55555555-5555-5555-5555-555555555555"
+
+
+async def _noop_estado(*_args, **_kwargs):
+    """`estado_actual` devuelve la fila previa leyendo la base; aquí no.
+
+    Sin este stub el PATCH saldría a la Supabase de producción, que es a donde
+    apunta app/.env.
+    """
+    return {}
+
+
+@pytest.fixture
+def catalogo(monkeypatch):
+    """El taller ofrece exactamente un servicio."""
+
+    async def fake_servicios(organization_id):
+        assert organization_id == ORG
+        return [{"id": SERVICIO_ID, "name": "Alineación", "duration_minutes": 60}]
+
+    monkeypatch.setattr(
+        citas_endpoint.agenda_service, "servicios_ofrecidos", fake_servicios
+    )
+
+
+def test_create_passes_the_catalog_service_through(monkeypatch, catalogo):
+    seen = {}
+
+    async def fake_create(organization_id, data):
+        seen["service_type_id"] = str(data.service_type_id)
+        return _canned()
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "create_cita", fake_create)
+
+    response = client.post(
+        "/api/citas",
+        json={
+            "customer_id": CUSTOMER_ID,
+            "scheduled_at": "2026-09-10T15:00:00-05:00",
+            "service_type_id": SERVICIO_ID,
+        },
+    )
+
+    assert response.status_code == 201
+    assert seen["service_type_id"] == SERVICIO_ID
+
+
+def test_create_rejects_a_service_from_another_shop(monkeypatch, catalogo):
+    async def fake_create(organization_id, data):  # pragma: no cover - no debe correr
+        raise AssertionError("no debió llegar al servicio")
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "create_cita", fake_create)
+
+    response = client.post(
+        "/api/citas",
+        json={
+            "customer_id": CUSTOMER_ID,
+            "scheduled_at": "2026-09-10T15:00:00-05:00",
+            "service_type_id": SERVICIO_AJENO,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_patch_passes_the_catalog_service_through(monkeypatch, catalogo):
+    seen = {}
+
+    async def fake_update(organization_id, cita_id, data):
+        seen["service_type_id"] = str(data.service_type_id)
+        return _canned()
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+    monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", _noop_estado)
+
+    response = client.patch(
+        f"/api/citas/{CITA_ID}", json={"service_type_id": SERVICIO_ID}
+    )
+
+    assert response.status_code == 200
+    assert seen["service_type_id"] == SERVICIO_ID
+
+
+def test_patch_rejects_a_service_from_another_shop(monkeypatch, catalogo):
+    async def fake_update(organization_id, cita_id, data):  # pragma: no cover
+        raise AssertionError("no debió llegar al servicio")
+
+    monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+
+    response = client.patch(
+        f"/api/citas/{CITA_ID}", json={"service_type_id": SERVICIO_AJENO}
+    )
+
+    assert response.status_code == 422
 
 
 def test_delete_returns_204_with_no_body(monkeypatch):
@@ -221,10 +421,10 @@ class TestAvisoAlCliente:
     def avisos(self, monkeypatch):
         registrados = []
 
-        async def fake_avisar(provider, *, anterior, cita):
+        async def fake_avisar(provider, *, anterior, cita, **kwargs):
             registrados.append((anterior, cita.get("status")))
 
-        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", fake_avisar)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_cita", fake_avisar)
         return registrados
 
     def test_aceptar_una_solicitud_dispara_el_aviso(self, monkeypatch, avisos):
@@ -267,12 +467,12 @@ class TestAvisoAlCliente:
         async def fake_get(org, cita_id):
             return {"status": "solicitada"}
 
-        async def explota(provider, *, anterior, cita):
+        async def explota(provider, *, anterior, cita, **kwargs):
             raise RuntimeError("whapi caída")
 
         monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
         monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
-        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_estado", explota)
+        monkeypatch.setattr(citas_endpoint, "avisar_cambio_de_cita", explota)
 
         # TestClient re-lanza las excepciones de las tareas de fondo, lo que
         # esconde el status code que el llamador recibió de verdad: en
@@ -349,7 +549,7 @@ class TestGenerarLinkDeAgenda:
 class TestElAvisoLlegaPorElEndpointCompleto:
     """Confirmar por la ruta HTTP realmente manda el mensaje.
 
-    La otra clase sustituye `avisar_cambio_de_estado` y solo comprueba que se
+    La otra clase sustituye `avisar_cambio_de_cita` y solo comprueba que se
     agenda la tarea. Eso dejó pasar el bug del enum: la tarea se agendaba con
     los argumentos correctos y la función real retornaba sin enviar.
 
@@ -409,3 +609,39 @@ class TestElAvisoLlegaPorElEndpointCompleto:
         self._confirmar(monkeypatch, anterior="agendada")
 
         assert proveedor == []
+
+    def test_reprogramar_una_cita_agendada_envia_un_mensaje_con_ambas_horas(
+        self, monkeypatch, proveedor
+    ):
+        """Todo doble de `estado_actual` en este archivo devolvía `{"status":
+        ...}` sin `scheduled_at`, así que `previo.get("scheduled_at")` era
+        siempre None y la rama de "cita movida" nunca se ejercitaba de punta a
+        punta -- ni siquiera aquí, la clase que existe justo para eso. Con un
+        doble que sí trae la hora anterior, invertir por accidente los
+        argumentos de `avisar_cambio_de_cita` en el endpoint (mandar la hora
+        NUEVA como anterior) rompe este test."""
+        async def fake_update(org, cita_id, data, **kw):
+            return _canned(
+                status=CitaStatus.agendada,
+                scheduled_at=datetime(2026, 9, 16, 19, 0, tzinfo=timezone.utc),  # 2:00 p.m. Panamá
+            )
+
+        async def fake_get(org, cita_id):
+            return {
+                "status": "agendada",
+                "scheduled_at": "2026-09-15T13:00:00+00:00",  # 8:00 a.m. Panamá
+            }
+
+        monkeypatch.setattr(citas_endpoint.citas_service, "update_cita", fake_update)
+        monkeypatch.setattr(citas_endpoint.citas_service, "estado_actual", fake_get)
+
+        r = client.patch(
+            f"/api/citas/{CITA_ID}",
+            json={"scheduled_at": "2026-09-16T14:00:00-05:00"},
+        )
+
+        assert r.status_code == 200
+        assert len(proveedor) == 1
+        cuerpo = proveedor[0].body
+        assert "8:00 a.m." in cuerpo
+        assert "2:00 p.m." in cuerpo

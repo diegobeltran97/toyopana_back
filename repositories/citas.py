@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 # The calendar needs the customer's name next to each cita; PostgREST embeds it
 # through the citas_customer_id_fkey relationship in the same round trip.
-CITA_SELECT = "*,customer:customers(id,name,phone)"
+#
+# service_types(name) does the same for the catalog service, via
+# service_type_id -- same embed shape repositories/business_rules.py already
+# uses for duration_minutes. schemas/cita.py flattens it into
+# `service_type_name`; a cita without a catalog service embeds `None`.
+CITA_SELECT = "*,customer:customers(id,name,phone),service_types(name)"
 
 
 class CitaRepository:
@@ -56,12 +61,21 @@ class CitaRepository:
             data: Column values (customer_id, scheduled_at, service_type, status).
 
         Returns:
-            The created row as PostgREST returned it.
+            The created row, with its customer embedded like every other method
+            here returns it.
+
+        El `select` no es cosmético: sin él PostgREST devuelve la fila pelada, y
+        quien recibe la cita recién creada no tiene el teléfono del cliente. Eso
+        dejó al aviso de confirmación sin destinatario -- se saltaba registrando
+        "sin teléfono", con el teléfono bien cargado en la ficha.
         """
         payload = {**data, "organization_id": str(organization_id)}
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.base_url}/citas", json=payload, headers=self.headers
+                f"{self.base_url}/citas",
+                json=payload,
+                params={"select": CITA_SELECT},
+                headers=self.headers,
             )
             self._raise_for_status(response, "creating cita")
             return response.json()[0]

@@ -18,10 +18,16 @@ import api.v1.endpoints.agenda_publica as agenda
 import services.agenda_service as agenda_service_module
 from schemas.cita import CitaRead, CitaStatus
 from services.agenda_token import crear_token
+from services.business_rules import PANAMA
 
 # La función real, capturada antes de que el fixture autouse la sustituya:
 # TestNaceComoSolicitud prueba su comportamiento, no el del doble.
 SOLICITAR_REAL = agenda_service_module.solicitar_cita
+
+# Igual que SOLICITAR_REAL: capturada antes de que el fixture autouse la
+# sustituya, porque TestNoSeOfrecenHorasPasadas prueba su cálculo de la hora
+# límite y con el doble no probaría nada.
+DISPONIBILIDAD_REAL = agenda_service_module.disponibilidad
 
 SECRETO = "un-secreto-largo-de-prueba"
 ORG = "11111111-1111-1111-1111-111111111111"
@@ -66,8 +72,16 @@ def _sin_db(monkeypatch):
             updated_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
         )
 
+    async def fake_servicios(organization_id):
+        llamadas.append(("servicios", organization_id))
+        return [
+            {"id": "44444444-4444-4444-4444-444444444444",
+             "name": "Cambio de amortiguadores", "duration_minutes": 120},
+        ]
+
     monkeypatch.setattr(agenda.agenda_service, "disponibilidad", fake_disponibilidad)
     monkeypatch.setattr(agenda.agenda_service, "solicitar_cita", fake_solicitar)
+    monkeypatch.setattr(agenda.agenda_service, "servicios_ofrecidos", fake_servicios)
     return llamadas
 
 
@@ -184,7 +198,9 @@ class TestReservar:
         assert self._reservar().status_code == 201
 
     def test_se_puede_indicar_un_servicio(self, _sin_db):
-        sid = "55555555-5555-5555-5555-555555555555"
+        # Tiene que ser un id del catálogo del doble (`fake_servicios`): desde
+        # el Step 8, uno ajeno se rechaza con 422 antes de llegar aquí.
+        sid = "44444444-4444-4444-4444-444444444444"
 
         self._reservar(service_type_id=sid)
 
@@ -349,3 +365,172 @@ class TestNoEnsuciaElCRM:
         cita = await self._crear(monkeypatch)
 
         assert cita.solicitante_telefono == "+50768510658"
+
+
+class TestNoSeOfrecenHorasPasadas:
+    """A las 9 p.m. la página no puede seguir ofreciendo las 8 a.m. de hoy.
+
+    Prueba `disponibilidad()` de verdad con el repositorio parcheado: el punto
+    es justamente que el servicio calcule la hora límite.
+    """
+
+    @pytest.fixture
+    def _repo(self, monkeypatch):
+        """Un taller abierto de 8 a 17 todos los días, sin citas ni feriados."""
+        class FakeRepo:
+            async def semana(self, org):
+                return {
+                    d: {"is_open": True, "opens_at": time(8), "closes_at": time(17),
+                        "max_citas": None, "capacidad_simultanea": 1}
+                    for d in range(7)
+                }
+
+            async def excepciones(self, org, desde, hasta):
+                return {}
+
+            async def citas_que_ocupan(self, org, dia):
+                return []
+
+        monkeypatch.setattr(
+            agenda_service_module, "BusinessRulesRepository", FakeRepo
+        )
+
+    def _congelar(self, monkeypatch, momento):
+        """Fija `datetime.now(PANAMA)` sin tocar el resto de datetime."""
+        real = agenda_service_module.datetime
+
+        class FakeDatetime(real):
+            @classmethod
+            def now(cls, tz=None):
+                return momento
+
+        monkeypatch.setattr(agenda_service_module, "datetime", FakeDatetime)
+
+    async def test_a_las_nueve_de_la_noche_hoy_no_tiene_horas(
+        self, _repo, monkeypatch
+    ):
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(not b["libre"] for b in dias[0]["bloques"])
+
+    async def test_pero_el_dia_sigue_marcado_como_ABIERTO(
+        self, _repo, monkeypatch
+    ):
+        """El taller sí abrió hoy. La pantalla debe decir "no quedan horas",
+        no "cerrado" — son cosas distintas y el cliente las lee distinto."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert dias[0]["abierto"] is True
+
+    async def test_temprano_en_la_manana_estan_todas(self, _repo, monkeypatch):
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 5, 0, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 1)
+
+        assert all(b["libre"] for b in dias[0]["bloques"])
+
+    async def test_a_media_manana_el_margen_corre_el_primer_bloque(
+        self, _repo, monkeypatch
+    ):
+        """9:30 + 2 h de margen = 11:30, así que el primer bloque reservable
+        es el de las 12:00."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 9, 30, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 1)
+
+        libres = [b["hora"] for b in dias[0]["bloques"] if b["libre"]]
+        assert libres[0] == time(12)
+
+    async def test_manana_no_se_filtra(self, _repo, monkeypatch):
+        """El margen es de hoy. Mañana está entero disponible."""
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 21, 42, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(b["libre"] for b in dias[1]["bloques"])
+
+    async def test_cerca_de_medianoche_el_margen_cruza_al_dia_siguiente(
+        self, _repo, monkeypatch
+    ):
+        """Fija la rama `fecha < limite.date()` de `disponibilidad()`.
+
+        23:00 + 2 h de margen = 01:00 del día 16: el límite ya cae en el
+        calendario de mañana, así que hoy entero debe quedar bloqueado con
+        `time.max`. Ninguna otra prueba de esta clase llega tan tarde -- todas
+        las demás calculan un límite que sigue siendo hoy -- así que sin esta
+        prueba esa rama (o un `<` volteado a `<=`) podría romperse o
+        desaparecer sin que la suite se diera cuenta.
+        """
+        self._congelar(monkeypatch, datetime(2026, 9, 15, 23, 0, tzinfo=PANAMA))
+
+        dias = await DISPONIBILIDAD_REAL(ORG, 2)
+
+        assert all(not b["libre"] for b in dias[0]["bloques"])
+        assert dias[0]["abierto"] is True
+
+
+class TestElCatalogoLlegaAlCliente:
+    """El selector de servicio tiene que salir del catálogo del taller, no de
+    una lista quemada en el frontend."""
+
+    def test_la_agenda_trae_los_servicios(self, _sin_db):
+        cuerpo = client.get(f"/api/public/agenda/{_token()}").json()
+
+        assert len(cuerpo["servicios"]) == 1
+
+    def test_cada_servicio_trae_lo_que_la_pantalla_necesita(self, _sin_db):
+        servicio = client.get(f"/api/public/agenda/{_token()}").json()["servicios"][0]
+
+        assert set(servicio) == {"id", "name", "duration_minutes"}
+
+    def test_el_catalogo_sale_de_la_organizacion_del_token(self, _sin_db):
+        client.get(f"/api/public/agenda/{_token()}")
+
+        assert ("servicios", ORG) in _sin_db
+
+    def test_un_catalogo_vacio_no_rompe_la_agenda(self, monkeypatch, _sin_db):
+        """Hoy `service_types` tiene cero filas en producción. La agenda tiene
+        que seguir funcionando: la página simplemente no muestra el selector."""
+        async def sin_servicios(organization_id):
+            return []
+
+        monkeypatch.setattr(agenda.agenda_service, "servicios_ofrecidos", sin_servicios)
+
+        respuesta = client.get(f"/api/public/agenda/{_token()}")
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["servicios"] == []
+
+
+class TestUnServicioAjenoNoSeAcepta:
+    """El `service_type_id` llega en el cuerpo, así que hay que comprobar que
+    pertenece al taller del token. Sin esto, conocer un UUID dejaría meter en
+    una cita un servicio de otro taller, con su duración."""
+
+    def _pedir(self, service_type_id):
+        return client.post(
+            f"/api/public/agenda/{_token()}/solicitar",
+            json={
+                "fecha": "2026-09-15",
+                "hora": "10:00",
+                "nombre": "Ana Torres",
+                "telefono": "68510658",
+                "service_type_id": service_type_id,
+            },
+        )
+
+    def test_un_servicio_del_catalogo_se_acepta(self, _sin_db):
+        assert self._pedir("44444444-4444-4444-4444-444444444444").status_code == 201
+
+    def test_un_servicio_que_no_esta_en_el_catalogo_da_422(self, _sin_db):
+        assert self._pedir("55555555-5555-5555-5555-555555555555").status_code == 422
+
+    def test_sin_servicio_se_acepta_igual(self, _sin_db):
+        """"Prefiero no decir" es una respuesta válida: obligar a clasificar el
+        problema antes de agendar pierde clientes que no saben cómo se llama
+        lo que les suena."""
+        assert self._pedir(None).status_code == 201

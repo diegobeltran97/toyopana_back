@@ -183,14 +183,84 @@ class BusinessRulesRepository:
             )
         response.raise_for_status()
 
-    async def servicios(self, organization_id: str) -> List[dict]:
-        """El catálogo activo, en el orden en que debe mostrarse."""
-        return await self._get(
-            "service_types",
-            {
-                "select": "id,name,duration_minutes,sort_order",
-                "organization_id": f"eq.{organization_id}",
-                "active": "is.true",
-                "order": "sort_order.asc,name.asc",
-            },
-        )
+    async def servicios(
+        self, organization_id: str, incluir_inactivos: bool = False
+    ) -> List[dict]:
+        """El catálogo, en el orden en que debe mostrarse.
+
+        `incluir_inactivos` existe para la pantalla de ajustes: un servicio
+        desactivado tiene que seguir viéndose ahí o no habría forma de
+        reactivarlo. Todo lo demás pide el default — un servicio desactivado
+        no debe poder reservarse.
+        """
+        params = {
+            "select": "id,name,duration_minutes,active,sort_order",
+            "organization_id": f"eq.{organization_id}",
+            "order": "sort_order.asc,name.asc",
+        }
+        if not incluir_inactivos:
+            params["active"] = "is.true"
+        return await self._get("service_types", params)
+
+    async def actualizar_servicio(
+        self, organization_id: str, servicio_id: str, datos: dict
+    ) -> Optional[dict]:
+        """Cambio parcial de un servicio. None si no existe en esta organización.
+
+        El filtro lleva `organization_id` además del id, y eso no es
+        redundante: sin él, conocer un UUID bastaría para editarle el catálogo
+        a otro taller.
+        """
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.patch(
+                f"{self.base_url}/service_types",
+                json=datos,
+                headers={**self.headers, "Prefer": "return=representation"},
+                params={
+                    "id": f"eq.{servicio_id}",
+                    "organization_id": f"eq.{organization_id}",
+                },
+            )
+        response.raise_for_status()
+        filas = response.json()
+        return filas[0] if filas else None
+
+    async def borrar_dia_especial(self, organization_id: str, fecha: date) -> bool:
+        """Quita una excepción. False si esa fecha no tenía ninguna."""
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.delete(
+                f"{self.base_url}/business_calendar",
+                headers={**self.headers, "Prefer": "return=representation"},
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "date": f"eq.{fecha.isoformat()}",
+                },
+            )
+        response.raise_for_status()
+        return bool(response.json())
+
+    async def agregar_dias_especiales(
+        self, organization_id: str, filas: List[dict]
+    ) -> int:
+        """Inserta las fechas que falten y devuelve cuántas entraron.
+
+        `ignore-duplicates` y no `merge-duplicates`: si el taller ya editó el 9
+        de enero para abrir medio día, volver a pulsar "cargar feriados" no
+        debe pisárselo.
+        """
+        if not filas:
+            return 0
+
+        cuerpo = [{"organization_id": organization_id, **fila} for fila in filas]
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.post(
+                f"{self.base_url}/business_calendar",
+                json=cuerpo,
+                headers={
+                    **self.headers,
+                    "Prefer": "return=representation,resolution=ignore-duplicates",
+                },
+                params={"on_conflict": "organization_id,date"},
+            )
+        response.raise_for_status()
+        return len(response.json())

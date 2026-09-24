@@ -249,6 +249,7 @@ def bloques_del_dia(
     dia: DiaHabil,
     ocupacion: Optional[Mapping[time, int]] = None,
     citas_aceptadas: int = 0,
+    desde: Optional[time] = None,
 ) -> List[Bloque]:
     """Los bloques de una hora del día, marcando cuáles se pueden reservar.
 
@@ -259,6 +260,11 @@ def bloques_del_dia(
     `ocupacion` cuenta solo citas ACEPTADAS (agendada + confirmada). Las
     solicitudes pendientes no ocupan, o cinco personas pidiendo las 10 a.m.
     dejarían el bloque en rojo sin que el taller aceptara ninguna.
+
+    `desde` marca ocupado todo bloque anterior a esa hora. Entra como
+    parámetro y no se lee el reloj aquí: este módulo es puro, y esa pureza es
+    lo que hace que sus pruebas no dependan de qué hora sea. Quien sabe la
+    hora es `agenda_service.disponibilidad()`.
     """
     if not dia.abierto or dia.abre is None or dia.cierra is None:
         return []
@@ -274,7 +280,78 @@ def bloques_del_dia(
     while _mas_minutos(cursor.time(), BLOQUE_MINUTOS) <= fin:
         hora = cursor.time()
         hay_cupo = ocupacion.get(hora, 0) < dia.capacidad_simultanea
-        bloques.append(Bloque(hora=hora, libre=hay_cupo and not dia_lleno))
+        # `<` y no `<=`: la hora justo en el límite todavía se puede reservar,
+        # porque el límite ya viene con el margen de anticipación sumado.
+        ya_paso = desde is not None and hora < desde
+        bloques.append(
+            Bloque(hora=hora, libre=hay_cupo and not dia_lleno and not ya_paso)
+        )
         cursor = _mas_minutos(hora, BLOQUE_MINUTOS)
 
     return bloques
+
+
+# ---------------------------------------------------------------------------
+# Feriados de Panamá
+# ---------------------------------------------------------------------------
+# Los de fecha fija. Los tres móviles se calculan desde la Pascua más abajo.
+#
+# El 5 de noviembre (Colón) y el 10 (Villa de los Santos) son regionales pero
+# se observan de hecho; la pantalla deja borrar el que no aplique, que es más
+# barato que discutir la lista aquí.
+_FERIADOS_FIJOS = (
+    ((1, 1), "Año Nuevo"),
+    ((1, 9), "Día de los Mártires"),
+    ((5, 1), "Día del Trabajador"),
+    ((11, 3), "Separación de Panamá de Colombia"),
+    ((11, 4), "Día de la Bandera"),
+    ((11, 5), "Día de Colón"),
+    ((11, 10), "Primer Grito de Independencia de la Villa de los Santos"),
+    ((11, 28), "Independencia de Panamá de España"),
+    ((12, 8), "Día de la Madre"),
+    ((12, 20), "Día de Duelo Nacional"),
+    ((12, 25), "Navidad"),
+)
+
+
+def _domingo_de_pascua(anio: int) -> date:
+    """Algoritmo de Meeus/Jones/Butcher (calendario gregoriano).
+
+    Se calcula y no se tabula porque una tabla se acaba: el año que se venza,
+    el taller abre un lunes de Carnaval sin que nadie lo haya decidido.
+    """
+    a = anio % 19
+    siglo, ano_del_siglo = divmod(anio, 100)
+    d, e = divmod(siglo, 4)
+    f = (siglo + 8) // 25
+    g = (siglo - f + 1) // 3
+    h = (19 * a + siglo - d - g + 15) % 30
+    i, k = divmod(ano_del_siglo, 4)
+    desfase = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * desfase) // 451
+    mes = (h + desfase - 7 * m + 114) // 31
+    dia = ((h + desfase - 7 * m + 114) % 31) + 1
+    return date(anio, mes, dia)
+
+
+def feriados_de_panama(anio: int) -> List[Tuple[date, str]]:
+    """Los feriados nacionales del año, como `(fecha, motivo)`, por fecha.
+
+    Incluye los tres móviles: lunes y martes de Carnaval (los dos días antes
+    del Miércoles de Ceniza) y Viernes Santo.
+
+    No aplica el traslado al lunes cuando un feriado cae domingo: eso depende
+    del tipo de feriado y de si el taller trabaja ese domingo, y la pantalla
+    deja editar cualquier fecha a mano.
+    """
+    pascua = _domingo_de_pascua(anio)
+    miercoles_de_ceniza = pascua - timedelta(days=46)
+
+    moviles = [
+        (miercoles_de_ceniza - timedelta(days=2), "Lunes de Carnaval"),
+        (miercoles_de_ceniza - timedelta(days=1), "Martes de Carnaval"),
+        (pascua - timedelta(days=2), "Viernes Santo"),
+    ]
+    fijos = [(date(anio, mes, dia), motivo) for (mes, dia), motivo in _FERIADOS_FIJOS]
+
+    return sorted(fijos + moviles)
