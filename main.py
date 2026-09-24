@@ -1,3 +1,6 @@
+import logging
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
@@ -5,7 +8,27 @@ from core.cors import add_cors
 from api.v1.router import router as v1_router
 from integrations.messaging.factory import verify_provider_configured
 
+
+def _configurar_logs() -> None:
+    """Hacer visibles los logs de la aplicación.
+
+    uvicorn configura sus propios loggers pero NO el root, así que sin esto
+    todo `logger.info(...)` de services/ y repositories/ se descarta y solo
+    sobreviven los warning -- pelados, sin hora ni nivel.
+
+    Eso deja media aplicación muda justo donde hace falta mirar: "Avisada la
+    cita X" y "Cita X sin teléfono" son las dos líneas que distinguen un aviso
+    enviado de uno saltado, y ninguna de las dos llegaba a la consola.
+    """
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
 def create_app() -> FastAPI:
+    _configurar_logs()
     app = FastAPI(title="WhatsApp Metrics API", version="1.0.0")
 
     # Fail on boot, not on the first customer message, if WHATSAPP_PROVIDER
