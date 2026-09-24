@@ -53,6 +53,10 @@ class CitaUpdate(BaseModel):
     status: Optional[CitaStatus] = None
     scheduled_at: Optional[datetime] = None
     service_type: Optional[str] = None
+    # El servicio del catálogo. Mandar `null` explícito lo borra; omitir la
+    # clave lo deja como está -- misma convención que `service_type`, que es
+    # el texto libre que este campo vino a reemplazar en el modal del taller.
+    service_type_id: Optional[uuid.UUID] = None
     vehicle_id: Optional[uuid.UUID] = None
 
 

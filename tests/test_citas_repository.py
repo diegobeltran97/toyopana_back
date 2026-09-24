@@ -55,9 +55,15 @@ class FakeAsyncClient:
         )
         return self._next()
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, params=None, json=None, headers=None):
         FakeAsyncClient.calls.append(
-            {"method": "POST", "url": url, "json": json, "headers": headers}
+            {
+                "method": "POST",
+                "url": url,
+                "params": params,
+                "json": json,
+                "headers": headers,
+            }
         )
         return self._next()
 
@@ -104,6 +110,29 @@ async def test_create_posts_row_and_returns_it(monkeypatch):
     # The org is stamped by the repository, never taken from the caller's dict.
     assert call["json"]["organization_id"] == ORG
     assert call["headers"]["Prefer"] == "return=representation"
+
+
+async def test_create_returns_the_row_with_its_customer(monkeypatch):
+    """El INSERT tiene que devolver el cliente embebido, como get/update.
+
+    Sin el `select` PostgREST devuelve la fila pelada. La cita recién creada
+    llegaba entonces sin `customer`, y el aviso de confirmación se saltaba
+    registrando "sin teléfono" -- con el teléfono bien cargado en la ficha.
+    Un fallo silencioso: la cita quedaba agendada y nadie le avisaba al cliente.
+    """
+    fila = {
+        "id": CITA_ID,
+        "customer": {"id": "c1", "name": "Juan Pérez", "phone": "+50768510658"},
+    }
+    _patch_client(monkeypatch, FakeResponse(json_data=[fila]))
+    repo = CitaRepository()
+
+    row = await repo.create(
+        ORG, {"customer_id": "c1", "scheduled_at": "2026-09-01T15:00:00+00:00"}
+    )
+
+    assert FakeAsyncClient.calls[0]["params"]["select"] == citas_repo_module.CITA_SELECT
+    assert row["customer"]["phone"] == "+50768510658"
 
 
 def test_select_includes_the_catalog_service_name():

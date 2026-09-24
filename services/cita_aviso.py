@@ -127,6 +127,94 @@ def _mensaje_de_cambio_de_hora(nombre: str, antes: str, ahora: str) -> str:
     )
 
 
+def _destinatario(cita: Dict[str, Any]) -> Optional[tuple]:
+    """A quién se le escribe: (teléfono, primer nombre). None si no se puede.
+
+    El cliente del CRM manda cuando existe (cita creada en el panel); si no, los
+    datos que la persona dejó en la agenda web. Sin este segundo caso ninguna
+    solicitud recibiría confirmación, que es justo para lo que existe.
+    """
+    cliente = cita.get("customer") or {}
+    telefono = cliente.get("phone") or cita.get("solicitante_telefono")
+    nombre_completo = cliente.get("name") or cita.get("solicitante_nombre") or ""
+
+    if not telefono:
+        # Un cliente sin teléfono cargado no tiene a dónde recibir el aviso.
+        # No es un error: el taller lo verá igual en su calendario.
+        logger.info("Cita %s sin teléfono; no se avisa", cita.get("id"))
+        return None
+
+    # Misma compuerta que las respuestas del bot: mientras se prueba, solo los
+    # números listados reciben mensajes.
+    if not puede_recibir(telefono):
+        return None
+
+    return telefono, nombre_completo.split(" ")[0]
+
+
+async def _entregar(
+    provider: MessagingProvider,
+    telefono: str,
+    cuerpo: Optional[str],
+    cita_id: Any,
+) -> None:
+    """Manda el mensaje y registra el resultado. NUNCA lanza."""
+    if cuerpo is None:
+        return
+
+    try:
+        resultado = await provider.send_text(
+            OutboundMessage(phone=telefono, body=cuerpo)
+        )
+    except Exception:
+        logger.exception("No se pudo avisar la cita %s", cita_id)
+        return
+
+    if not resultado.ok:
+        logger.error(
+            "El proveedor rechazó el aviso de la cita %s: %s", cita_id, resultado.error
+        )
+        return
+
+    logger.info("Avisada la cita %s", cita_id)
+
+
+# Una cita que NACE firme: el taller la agendó por el cliente, por teléfono o en
+# el mostrador. El cliente no pidió nada por la web, así que este es el único
+# mensaje que va a recibir — sin él tiene una cita de la que nunca se enteró.
+#
+# Una cita que nace 'solicitada' NO entra aquí: todavía no está aceptada, y la
+# página pública ya le dijo que queda pendiente de confirmación. Su aviso sale
+# cuando el taller la acepta, por avisar_cambio_de_cita.
+_NACE_FIRME = {"agendada", "confirmada"}
+
+
+async def avisar_cita_nueva(
+    provider: MessagingProvider,
+    *,
+    cita: Dict[str, Any],
+) -> None:
+    """Le confirma al cliente la cita que el taller le agendó. Nunca lanza."""
+    estado = _texto_de_estado(cita.get("status"))
+    if estado not in _NACE_FIRME:
+        return
+
+    destino = _destinatario(cita)
+    if destino is None:
+        return
+    telefono, nombre = destino
+
+    try:
+        # La misma copia que recibe quien pidió la hora por la web y se la
+        # aceptaron: para el cliente las dos cosas son "tengo cita el tal día".
+        cuerpo = _mensaje("agendada", nombre, _cuando_legible(cita["scheduled_at"]))
+    except Exception:
+        logger.exception("No se pudo armar el aviso de la cita %s", cita.get("id"))
+        return
+
+    await _entregar(provider, telefono, cuerpo, cita.get("id"))
+
+
 async def avisar_cambio_de_cita(
     provider: MessagingProvider,
     *,
@@ -157,47 +245,20 @@ async def avisar_cambio_de_cita(
     if not cambio_de_estado and not (movida and nuevo in _MOVIBLES):
         return
 
-    # El cliente del CRM manda cuando existe (cita creada en el panel); si no,
-    # los datos que la persona dejó en la agenda web. Sin este segundo caso
-    # ninguna solicitud recibiría confirmación, que es justo para lo que existe.
-    cliente = cita.get("customer") or {}
-    telefono = cliente.get("phone") or cita.get("solicitante_telefono")
-    nombre_completo = cliente.get("name") or cita.get("solicitante_nombre") or ""
-
-    if not telefono:
-        # Un cliente sin teléfono cargado no tiene a dónde recibir el aviso.
-        # No es un error: el taller lo verá igual en su calendario.
-        logger.info("Cita %s sin teléfono; no se avisa", cita.get("id"))
+    destino = _destinatario(cita)
+    if destino is None:
         return
-
-    # Misma compuerta que las respuestas del bot: mientras se prueba, solo los
-    # números listados reciben mensajes.
-    if not puede_recibir(telefono):
-        return
+    telefono, nombre = destino
 
     try:
-        nombre = nombre_completo.split(" ")[0]
         if cambio_de_estado:
             cuerpo = _mensaje(nuevo, nombre, _cuando_legible(cita["scheduled_at"]))
         else:
             cuerpo = _mensaje_de_cambio_de_hora(
                 nombre, _cuando_legible(antes), _cuando_legible(ahora)
             )
-        if cuerpo is None:
-            return
-
-        resultado = await provider.send_text(
-            OutboundMessage(phone=telefono, body=cuerpo)
-        )
     except Exception:
-        logger.exception("No se pudo avisar el cambio de la cita %s", cita.get("id"))
+        logger.exception("No se pudo armar el aviso de la cita %s", cita.get("id"))
         return
 
-    if not resultado.ok:
-        logger.error(
-            "El proveedor rechazó el aviso de la cita %s: %s",
-            cita.get("id"), resultado.error,
-        )
-        return
-
-    logger.info("Avisado el cambio de la cita %s", cita.get("id"))
+    await _entregar(provider, telefono, cuerpo, cita.get("id"))

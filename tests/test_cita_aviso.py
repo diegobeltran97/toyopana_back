@@ -164,6 +164,90 @@ class TestNadaPuedeRomperse:
         assert provider.enviados == []
 
 
+class TestCitaAgendadaPorElTaller:
+    """El taller agenda por el cliente: por teléfono, o con la persona enfrente.
+
+    Ese cliente nunca pidió nada por la web, así que este es el ÚNICO mensaje
+    que va a recibir. Sin él se va del mostrador sin nada escrito de cuándo
+    tiene que volver, que es justo el papelito que esto vino a reemplazar.
+    """
+
+    async def test_una_cita_nueva_y_firme_se_le_confirma_al_cliente(self):
+        provider = FakeProvider()
+
+        await aviso.avisar_cita_nueva(provider, cita=_cita("agendada"))
+
+        assert len(provider.enviados) == 1
+        assert "confirmada" in provider.enviados[0].body
+
+    async def test_el_mensaje_lleva_el_dia_y_la_hora_del_taller(self):
+        """13:00 UTC son las 8:00 a.m. en Panamá. Mandar la hora UTC citaría al
+        cliente cinco horas tarde."""
+        provider = FakeProvider()
+
+        await aviso.avisar_cita_nueva(provider, cita=_cita("agendada"))
+
+        cuerpo = provider.enviados[0].body
+        assert "martes 15 de septiembre" in cuerpo
+        assert "8:00 a.m." in cuerpo
+
+    async def test_una_solicitud_de_la_web_no_se_confirma_al_nacer(self):
+        """EL CASO QUE NO DEBE DOBLARSE.
+
+        Una cita pedida por la agenda pública nace 'solicitada' y todavía no
+        está aceptada -- la página ya le dijo al cliente que queda pendiente.
+        Confirmarla aquí le prometería una hora que el taller no ha mirado, y
+        después llegaría un segundo mensaje cuando la acepte de verdad.
+        """
+        provider = FakeProvider()
+
+        await aviso.avisar_cita_nueva(provider, cita=_cita("solicitada"))
+
+        assert provider.enviados == []
+
+    async def test_una_cita_nueva_sin_telefono_no_lanza(self):
+        provider = FakeProvider()
+        cita = _cita("agendada")
+        cita["customer"] = {}
+
+        await aviso.avisar_cita_nueva(provider, cita=cita)
+
+        assert provider.enviados == []
+
+    async def test_el_estado_puede_llegar_como_enum(self):
+        """`cita.model_dump()` deja `status` como CitaStatus, no como texto.
+        Comparar eso contra "agendada" falla y el aviso se salta EN SILENCIO."""
+        provider = FakeProvider()
+        cita = _cita()
+        cita["status"] = CitaStatus.agendada
+
+        await aviso.avisar_cita_nueva(provider, cita=cita)
+
+        assert len(provider.enviados) == 1
+
+    async def test_respeta_la_allowlist(self, monkeypatch):
+        monkeypatch.setattr(
+            aviso.settings, "WHATSAPP_ALLOWED_NUMBERS", "50768510658", raising=False
+        )
+        provider = FakeProvider()
+
+        await aviso.avisar_cita_nueva(
+            provider, cita=_cita("agendada", telefono="+50761112222")
+        )
+
+        assert provider.enviados == []
+
+    async def test_si_el_proveedor_revienta_no_se_propaga(self):
+        """La cita ya está guardada y es la verdad: un WhatsApp caído no puede
+        tumbar el 201."""
+
+        class ProviderRoto:
+            async def send_text(self, msg):
+                raise RuntimeError("whapi caído")
+
+        await aviso.avisar_cita_nueva(ProviderRoto(), cita=_cita("agendada"))
+
+
 class TestAllowlistDeTesting:
     """El aviso también respeta WHATSAPP_ALLOWED_NUMBERS.
 

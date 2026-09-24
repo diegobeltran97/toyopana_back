@@ -228,6 +228,10 @@ async def update_cita(
         payload["scheduled_at"] = data.scheduled_at.isoformat()
     if "service_type" in fields:
         payload["service_type"] = data.service_type
+    if "service_type_id" in fields:
+        payload["service_type_id"] = (
+            str(data.service_type_id) if data.service_type_id else None
+        )
     if "vehicle_id" in fields:
         payload["vehicle_id"] = str(data.vehicle_id) if data.vehicle_id else None
 

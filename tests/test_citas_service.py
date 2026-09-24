@@ -220,6 +220,41 @@ async def test_reschedule_without_status_is_allowed_from_any_open_state():
     assert "status" not in data
 
 
+async def test_update_writes_the_catalog_service():
+    """El modal del taller escoge del catálogo, así que manda el id."""
+    repo = FakeRepo(existing=_row(status="agendada"))
+    servicio = uuid.uuid4()
+
+    await update_cita(ORG, CITA_ID, CitaUpdate(service_type_id=servicio), repo=repo)
+
+    _, _, data = repo.updated
+    assert data["service_type_id"] == str(servicio)
+
+
+async def test_update_clears_the_catalog_service_with_an_explicit_null():
+    """`null` lo borra; omitir la clave lo dejaría intacto (exclude_unset)."""
+    repo = FakeRepo(existing=_row(status="agendada"))
+
+    await update_cita(
+        ORG,
+        CITA_ID,
+        CitaUpdate.model_validate({"service_type_id": None}),
+        repo=repo,
+    )
+
+    _, _, data = repo.updated
+    assert data["service_type_id"] is None
+
+
+async def test_update_leaves_the_catalog_service_alone_when_not_sent():
+    repo = FakeRepo(existing=_row(status="agendada"))
+
+    await update_cita(ORG, CITA_ID, CitaUpdate(status=CitaStatus.confirmada), repo=repo)
+
+    _, _, data = repo.updated
+    assert "service_type_id" not in data
+
+
 async def test_update_400_when_body_is_empty():
     repo = FakeRepo(existing=_row())
 

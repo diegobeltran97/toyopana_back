@@ -26,11 +26,34 @@ from core.config import settings
 from services.agenda_token import TTL_HORAS_DEFAULT, crear_token, leer_token
 from integrations.messaging.base import MessagingProvider
 from integrations.messaging.factory import get_messaging_provider
-from services.cita_aviso import avisar_cambio_de_cita
+from services.cita_aviso import avisar_cambio_de_cita, avisar_cita_nueva
 from schemas.cita import CitaCreate, CitaRead, CitaStatus, CitaUpdate
-from services import citas_service
+from services import agenda_service, citas_service
 
 router = APIRouter()
+
+
+async def _verificar_servicio(organization_id: str, service_type_id) -> None:
+    """
+    Comprobar que el servicio del catálogo es de este taller.
+
+    Mismo guard que endpoints/agenda_publica.py: el id viaja en el cuerpo, así
+    que sin esto conocer un UUID dejaría meterle a una cita un servicio ajeno,
+    con su duración — que es lo que decide cuánto ocupa en la agenda. Aquí el
+    que llama ya está autenticado, pero lo está contra SU organización, no
+    contra todas.
+
+    `servicios_ofrecidos` devuelve solo los activos, de modo que un servicio
+    dado de baja tampoco puede asignarse a una cita nueva.
+    """
+    if service_type_id is None:
+        return
+    catalogo = await agenda_service.servicios_ofrecidos(organization_id)
+    if str(service_type_id) not in {str(s["id"]) for s in catalogo}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Ese servicio no está disponible",
+        )
 
 
 def require_organization_id(current_user: dict) -> str:
@@ -89,16 +112,31 @@ async def list_citas(
 )
 async def create_cita(
     payload: CitaCreate,
+    background: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
+    provider: MessagingProvider = Depends(get_messaging_provider),
 ):
     """
     Create a cita in state 'agendada'.
 
     A cita is an intention, not an order: no vehicle is required and no order is
     created here. The order is born later, at reception.
+
+    Agendar por el cliente también le manda el WhatsApp de confirmación: la cita
+    la acordaron por teléfono o en el mostrador, y sin este mensaje la persona
+    se va sin nada escrito de cuándo tiene que volver.
     """
     organization_id = require_organization_id(current_user)
-    return await citas_service.create_cita(organization_id, payload)
+    await _verificar_servicio(organization_id, payload.service_type_id)
+    cita = await citas_service.create_cita(organization_id, payload)
+
+    # En segundo plano, igual que el PATCH: la cita ya está guardada y es la
+    # verdad, así que el 201 no puede quedar esperando a WhatsApp.
+    # avisar_cita_nueva nunca lanza, y se calla sola si la cita nace
+    # 'solicitada' — esa todavía no está aceptada.
+    background.add_task(avisar_cita_nueva, provider, cita=cita.model_dump())
+
+    return cita
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +222,7 @@ async def update_cita(
     accepts the appointment and nobody tells the customer, who keeps waiting.
     """
     organization_id = require_organization_id(current_user)
+    await _verificar_servicio(organization_id, payload.service_type_id)
 
     # La fila ANTES de tocarla: el aviso depende de de dónde viene el cambio —
     # tanto el estado como la hora— y después del update esos datos se
