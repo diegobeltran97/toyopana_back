@@ -15,7 +15,9 @@ import asyncio
 import logging
 import re
 import unicodedata
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from core.config import settings
 from integrations.messaging.base import MessagingProvider
@@ -24,7 +26,10 @@ from services.agenda_token import crear_token
 from services.allowlist import puede_recibir
 from services.business_rules import texto_de_horario
 from repositories.conversations import (
+    ceder_a_un_humano,
+    devolver_al_bot,
     record_message,
+    tocar_estado_bot,
     touch_last_inbound,
     upsert_conversation,
 )
@@ -36,6 +41,20 @@ logger = logging.getLogger(__name__)
 # Only this status means the bot owns the conversation. 'waiting', 'agent' and
 # 'resolved' all mean a human is involved, and the bot must not talk over them.
 BOT_OWNED_STATUS = "bot"
+
+# El estado que el propio bot se pone cuando ya no tiene nada útil que decir.
+# Es el ÚNICO que se revierte solo: 'agent' y 'resolved' los puso una persona.
+ESTADO_CEDIDO = "waiting"
+
+# Cuánto silencio del cliente hace falta para que la conversación empiece de
+# cero y el saludo vuelva a tener sentido.
+#
+# Se mide sobre el silencio DEL CLIENTE y no sobre la última vez que habló el
+# bot. El taller contesta desde su propio WhatsApp y esos mensajes no nos
+# llegan (parser.py descarta from_me), así que medir desde el bot haría
+# aparecer el menú en medio de una conversación que una persona está
+# atendiendo. Que el cliente escriba es la única señal de vida que tenemos.
+VENTANA_DE_SESION = timedelta(hours=24)
 
 # How long to wait for the customer to stop typing before answering.
 #
@@ -330,28 +349,139 @@ def _welcome_menu(phone: str) -> OutboundInteractive:
     return _node_to_message(FLUJO[NODO_INICIAL], phone)
 
 
+# ---------------------------------------------------------------------------
+# El acuse de recibo: lo último que dice el bot antes de callarse.
+#
+# Lo manda cuando el cliente escribe algo que el árbol no cubre Y la
+# conversación ya venía andando -- casi siempre porque está contestando lo que
+# el propio bot le preguntó. Antes eso devolvía el menú de bienvenida: el bot
+# preguntaba, le contestaban, y volvía a saludar como si nada.
+#
+# Callarse del todo tampoco servía: el cliente queda sin saber si lo leyeron.
+# Se acusa recibo UNA vez y la conversación pasa a una persona, que es quien
+# puede cotizar de verdad.
+# ---------------------------------------------------------------------------
+
+ACUSES: dict = {
+    "menu_cotizacion": (
+        "¡Listo! 🙌 Ya tenemos tus datos.\n\n"
+        "Un asesor te confirma *precio y disponibilidad* en breve."
+    ),
+}
+
+ACUSE_POR_DEFECTO = (
+    "¡Listo! 🙌 Un asesor ya va a leer tu mensaje y te responde "
+    "en horario de atención."
+)
+
+
+def _acuse(nodo: Optional[str], phone: str) -> OutboundMessage:
+    """El acuse que corresponde al nodo donde venía la conversación."""
+    return OutboundMessage(phone=phone, body=ACUSES.get(nodo or "", ACUSE_POR_DEFECTO))
+
+
+def _momento(valor: Any) -> Optional[datetime]:
+    """El texto ISO que manda PostgREST, como datetime con zona.
+
+    Una marca ilegible se trata como si no existiera: dar la sesión por vencida
+    hace que el bot salude de más, que es mucho más barato que quedarse callado
+    para siempre por un dato corrupto.
+    """
+    if not valor:
+        return None
+
+    try:
+        momento = datetime.fromisoformat(str(valor))
+    except ValueError:
+        logger.warning("bot_node_at ilegible (%r); se ignora la sesión", valor)
+        return None
+
+    # Sin zona se asume UTC, que es como Postgres guarda los timestamptz.
+    return momento if momento.tzinfo else momento.replace(tzinfo=timezone.utc)
+
+
+def _nodo_activo(conversation: dict) -> Optional[str]:
+    """En qué nodo va la conversación, o None si no hay una sesión viva.
+
+    None significa las dos cosas que se tratan igual: el bot nunca habló en
+    este chat, o habló hace tanto que lo que llega ahora es una consulta nueva.
+    En ambos casos el saludo es la respuesta correcta.
+    """
+    nodo = conversation.get("bot_node")
+    if not nodo:
+        return None
+
+    desde = _momento(conversation.get("bot_node_at"))
+    if desde is None or datetime.now(timezone.utc) - desde > VENTANA_DE_SESION:
+        return None
+
+    return nodo
+
+
+def _sesion_vencida(conversation: dict) -> bool:
+    """¿La última actividad que registramos ya pasó la ventana?
+
+    NO es lo mismo que `_nodo_activo(...) is None`, que también da cierto
+    cuando nunca hubo actividad -- y esa diferencia es la que decide si el bot
+    puede retomar una conversación cedida. Reactivarlo exige que el reloj haya
+    corrido de verdad: un 'waiting' sin marca de tiempo no lo puso el bot sino
+    una persona, y quitárselo es hablarle encima.
+    """
+    desde = _momento(conversation.get("bot_node_at"))
+    return desde is not None and datetime.now(timezone.utc) - desde > VENTANA_DE_SESION
+
+
 # La compuerta vive en services/allowlist.py, compartida con los avisos de
 # cita: una copia por sitio de uso es como uno de los dos deja de respetarla.
 _is_reply_allowed = puede_recibir
 
 
-async def _decide_reply(organization_id: str, event: InboundMessage):
+@dataclass(frozen=True)
+class Decision:
+    """Qué contestar, y en qué deja la conversación.
+
+    Las tres cosas viajan juntas porque se deciden juntas: quien escoge el
+    mensaje es el único que sabe en qué nodo queda el cliente y si el bot
+    todavía tiene algo que aportar. Devolver solo el mensaje fue lo que dejó
+    la decisión sin memoria.
+    """
+
+    mensaje: Union[OutboundMessage, OutboundInteractive, None] = None
+    nodo: Optional[str] = None      # el nodo que queda vigente tras responder
+    ceder: bool = False             # ¿pasa a una persona después de esto?
+
+
+async def _decide_reply(
+    organization_id: str,
+    event: InboundMessage,
+    *,
+    nodo_actual: Optional[str] = None,
+) -> Decision:
     """Decide what to answer (SEAM).
 
     1. A tapped button routes through the tree. Deterministic, costs nothing,
        and covers the traffic we can anticipate.
-    2. Anything else -- free text, or a button id the tree no longer has
-       (an old chat still showing a retired menu) -- falls back to the welcome
-       menu. THIS is where the DecisionEngine (Claude) goes: the fallback is
-       the seam, not a dead end.
+    2. Free text that unambiguously names an option routes there too.
+    3. Lo que no cae en ninguna de las dos depende de si la conversación ya
+       venía andando:
+         * `nodo_actual` es None -- nadie ha hablado, o el último mensaje fue
+           hace más de la ventana. El saludo es la respuesta correcta.
+         * `nodo_actual` tiene valor -- el bot ya habló, y lo más probable es
+           que esto sea la respuesta a lo que él mismo preguntó. Repetir el
+           menú ahí es el bug del 2026-09-24: se acusa recibo y pasa a una
+           persona.
+
+    THIS is where the DecisionEngine (Claude) goes: el punto 3 es la costura,
+    no un callejón sin salida.
     """
     nodo_id = event.reply_id or ""
     if nodo_id in NODOS_DINAMICOS:
-        return await NODOS_DINAMICOS[nodo_id](organization_id, event.from_phone)
+        mensaje = await NODOS_DINAMICOS[nodo_id](organization_id, event.from_phone)
+        return Decision(mensaje, nodo=nodo_id)
 
     node = FLUJO.get(nodo_id)
     if node is not None:
-        return _node_to_message(node, event.from_phone)
+        return Decision(_node_to_message(node, event.from_phone), nodo=nodo_id)
 
     # The ad's canned text carries no intent; deciding with it in the way only
     # adds noise, and will do the same to the LLM's prompt later.
@@ -361,13 +491,24 @@ async def _decide_reply(organization_id: str, event: InboundMessage):
     if por_palabra is not None:
         logger.info("Texto libre ruteado a %r por palabra clave", por_palabra)
         if por_palabra in NODOS_DINAMICOS:
-            return await NODOS_DINAMICOS[por_palabra](
+            mensaje = await NODOS_DINAMICOS[por_palabra](
                 organization_id, event.from_phone
             )
-        return _node_to_message(FLUJO[por_palabra], event.from_phone)
+        else:
+            mensaje = _node_to_message(FLUJO[por_palabra], event.from_phone)
+        return Decision(mensaje, nodo=por_palabra)
+
+    if nodo_actual is not None:
+        logger.info(
+            "La conversación ya venía en %r; se acusa recibo y pasa a un humano",
+            nodo_actual,
+        )
+        return Decision(
+            _acuse(nodo_actual, event.from_phone), nodo=nodo_actual, ceder=True
+        )
 
     # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
-    return _welcome_menu(event.from_phone)
+    return Decision(_welcome_menu(event.from_phone), nodo=NODO_INICIAL)
 
 
 async def handle_inbound(
@@ -395,11 +536,36 @@ async def handle_inbound(
         logger.exception("No se pudo persistir el mensaje entrante %s", event.provider_event_id)
         return
 
-    if conversation.get("status") != BOT_OWNED_STATUS:
+    # En qué nodo venía la conversación. Es lo que impide que el bot vuelva a
+    # saludar a quien está contestándole.
+    nodo_actual = _nodo_activo(conversation)
+    status = conversation.get("status")
+
+    # Un cliente que vuelve después de la ventana trae una consulta nueva, y el
+    # bot tiene que poder atenderla. Solo se reactiva lo que él mismo silenció:
+    # 'agent' y 'resolved' los puso una persona, y resucitar sobre eso es
+    # justamente hablarle encima a un colega.
+    if status == ESTADO_CEDIDO and _sesion_vencida(conversation):
+        if await _sin_reventar(
+            devolver_al_bot(conversation_id=conversation_id),
+            "devolverle la conversación al bot",
+        ):
+            status = BOT_OWNED_STATUS
+
+    if status != BOT_OWNED_STATUS:
+        if status == ESTADO_CEDIDO:
+            # El cliente acaba de escribir: esta conversación NO está en
+            # silencio, y el reloj de la ventana tiene que reflejarlo. Sin
+            # esto, a quien insiste cada pocas horas le aparecería el menú a
+            # las 24 horas del último mensaje del bot, en plena conversación.
+            await _sin_reventar(
+                tocar_estado_bot(conversation_id=conversation_id),
+                "refrescar la actividad de la conversación",
+            )
         logger.info(
             "Conversación %s en estado %r; el bot no responde",
             conversation_id,
-            conversation.get("status"),
+            status,
         )
         return
 
@@ -415,12 +581,13 @@ async def handle_inbound(
     # A tapped button is already a complete thought: waiting on it would be
     # latency that buys nothing.
     if event.reply_id:
-        reply = await _decide_reply(organization_id, event)
-        if reply is not None:
-            await _send_reply(provider, conversation_id, reply)
+        decision = await _decide_reply(
+            organization_id, event, nodo_actual=nodo_actual
+        )
+        await _aplicar(provider, conversation_id, decision)
         return
 
-    _schedule_reply(provider, organization_id, conversation_id, event)
+    _schedule_reply(provider, organization_id, conversation_id, event, nodo_actual)
 
 
 def _schedule_reply(
@@ -428,11 +595,15 @@ def _schedule_reply(
     organization_id: str,
     conversation_id: str,
     event: InboundMessage,
+    nodo_actual: Optional[str] = None,
 ) -> None:
     """Buffer the message and (re)start this conversation's reply timer.
 
     A newer message cancels the pending timer, so the burst is answered once,
     after it ends, with everything the customer said.
+
+    El nodo viaja con el temporizador y no se relee al disparar: dentro de una
+    ráfaga el bot no ha contestado, así que no ha cambiado.
     """
     _buffers.setdefault(conversation_id, []).append(event)
 
@@ -441,12 +612,15 @@ def _schedule_reply(
         pendiente.cancel()
 
     _timers[conversation_id] = asyncio.create_task(
-        _reply_after_quiet(provider, organization_id, conversation_id)
+        _reply_after_quiet(provider, organization_id, conversation_id, nodo_actual)
     )
 
 
 async def _reply_after_quiet(
-    provider: MessagingProvider, organization_id: str, conversation_id: str
+    provider: MessagingProvider,
+    organization_id: str,
+    conversation_id: str,
+    nodo_actual: Optional[str] = None,
 ) -> None:
     """Wait out the quiet period, then answer the whole burst once."""
     try:
@@ -465,13 +639,58 @@ async def _reply_after_quiet(
         update={"body": "\n".join(e.body for e in eventos if e.body) or None}
     )
 
-    reply = await _decide_reply(organization_id, combinado)
-    if reply is not None:
-        await _send_reply(provider, conversation_id, reply)
+    decision = await _decide_reply(
+        organization_id, combinado, nodo_actual=nodo_actual
+    )
+    await _aplicar(provider, conversation_id, decision)
 
 
-async def _send_reply(provider: MessagingProvider, conversation_id: str, reply) -> None:
-    """Send one reply and record it. Never raises."""
+async def _sin_reventar(corutina, que: str) -> bool:
+    """Ejecuta algo que no puede tumbar el manejo del mensaje.
+
+    Todo esto corre después del 200 al proveedor: ya no queda código de estado
+    donde poner una falla, y una excepción solo mataría la tarea de fondo.
+    Devuelve si salió bien, porque hay decisiones que dependen de ello.
+    """
+    try:
+        await corutina
+        return True
+    except Exception:
+        logger.exception("No se pudo %s", que)
+        return False
+
+
+async def _aplicar(
+    provider: MessagingProvider, conversation_id: str, decision: Decision
+) -> None:
+    """Manda la respuesta y deja la conversación donde corresponde.
+
+    El orden importa: primero se envía, y solo si el mensaje salió se guarda el
+    nodo. Recordar un mensaje que nunca llegó deja al cliente mudo -- él no vio
+    nada, y el bot creería que ya habló y no volvería a saludar.
+    """
+    if decision.mensaje is None:
+        return
+
+    if not await _send_reply(provider, conversation_id, decision.mensaje):
+        return
+
+    await _sin_reventar(
+        tocar_estado_bot(conversation_id=conversation_id, nodo=decision.nodo),
+        "guardar el nodo de la conversación",
+    )
+
+    if decision.ceder:
+        await _sin_reventar(
+            ceder_a_un_humano(conversation_id=conversation_id),
+            "pasarle la conversación a una persona",
+        )
+
+
+async def _send_reply(
+    provider: MessagingProvider, conversation_id: str, reply
+) -> bool:
+    """Send one reply and record it. Never raises. Devuelve si salió."""
     try:
         # A text node and a button node are different provider calls; sending a
         # buttonless message through send_interactive would be rejected.
@@ -481,11 +700,11 @@ async def _send_reply(provider: MessagingProvider, conversation_id: str, reply) 
             result = await provider.send_text(reply)
     except Exception:
         logger.exception("Falló el envío de la respuesta a %s", reply.phone)
-        return
+        return False
 
     if not result.ok:
         logger.error("El proveedor rechazó la respuesta: %s (%s)", result.error, result.details)
-        return
+        return False
 
     # Record our own side of the thread. Without this the conversation has a
     # gap and repositories/marketing.py undercounts messages sent.
@@ -498,3 +717,5 @@ async def _send_reply(provider: MessagingProvider, conversation_id: str, reply) 
         )
     except Exception:
         logger.exception("No se pudo registrar la respuesta enviada")
+
+    return True
