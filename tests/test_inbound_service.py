@@ -91,6 +91,16 @@ class FakeProvider:
 
 
 @pytest.fixture
+def acuse_encendido(monkeypatch):
+    """Enciende el acuse, que en producción está apagado.
+
+    Lo piden los tests que prueban el acuse en sí: el texto sigue en el código
+    para el día que se vuelva a necesitar, y tiene que seguir funcionando.
+    """
+    monkeypatch.setattr(inbound_service, "ACUSE_ACTIVO", True)
+
+
+@pytest.fixture
 def repo(monkeypatch):
     """A stand-in for the conversation/customer persistence."""
 
@@ -771,15 +781,19 @@ class TestElMenuNoSeRepite:
 
         assert provider.sent == []
 
-    async def test_la_respuesta_a_la_cotizacion_recibe_un_acuse(self, repo):
-        """Callarse del todo deja al cliente sin saber si lo leyeron."""
+    async def test_la_respuesta_a_la_cotizacion_recibe_un_acuse(
+        self, repo, acuse_encendido
+    ):
+        """Con el acuse encendido el cliente sabe que lo leyeron."""
         repo.en_el_nodo("menu_cotizacion")
 
         provider = await self._contesta(repo)
 
         assert provider.sent_text and "asesor" in provider.sent_text[0].body
 
-    async def test_el_acuse_de_cotizacion_habla_de_precio(self, repo):
+    async def test_el_acuse_de_cotizacion_habla_de_precio(
+        self, repo, acuse_encendido
+    ):
         """Lo que el cliente está esperando es la cotización, no un 'gracias'."""
         repo.en_el_nodo("menu_cotizacion")
 
@@ -850,6 +864,65 @@ class TestElMenuNoSeRepite:
         await entregar(provider, _event(body="buenas"))
 
         assert repo.bot_node is None
+
+
+class TestElAcuseEstaApagado:
+    """El acuse está desactivado: el bot se calla y contesta el taller.
+
+    Apagado con un interruptor, no borrado. El texto y la lógica siguen en el
+    código porque el día que se quiera volver a usar no hay que reconstruirlos
+    -- pero antes de encenderlo hay que arreglarle la redacción (ver el
+    comentario de ACUSE_ACTIVO).
+
+    Lo que NO se apaga es ceder la conversación. Callarse sin ceder dejaría el
+    chat en 'bot': el bot seguiría evaluando cada mensaje, y nadie sabría que
+    hay un cliente esperando a una persona.
+    """
+
+    async def _contesta(self, repo, texto="Jetour Dashing año 2025 los amortiguadores"):
+        provider = FakeProvider()
+        await entregar(provider, _event(body=texto))
+        return provider
+
+    async def test_el_cliente_no_recibe_ningun_mensaje(self, repo):
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo)
+
+        assert provider.sent == [] and provider.sent_text == []
+
+    async def test_la_conversacion_igual_pasa_a_un_humano(self, repo):
+        """Lo importante del acuse nunca fue el texto, sino ceder."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        await self._contesta(repo, "aun no se la informacion")
+
+        assert repo.status == "waiting"
+
+    async def test_el_reloj_de_la_sesion_igual_se_mueve(self, repo):
+        """Sin refrescarlo, el menú reaparecería a las 24h del último mensaje
+        del bot aunque el cliente haya seguido escribiendo."""
+        repo.en_el_nodo("menu_cotizacion", hace_horas=5)
+
+        await self._contesta(repo, "quiero hablar")
+
+        assert datetime.now(timezone.utc) - repo.bot_node_at < timedelta(minutes=1)
+
+    async def test_el_nodo_no_se_pierde_al_callarse(self, repo):
+        """Si se borrara, la sesión quedaría sin nodo y el saludo volvería."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        await self._contesta(repo)
+
+        assert repo.bot_node == "menu_cotizacion"
+
+    async def test_encendido_vuelve_a_mandar_el_texto(self, repo, acuse_encendido):
+        """El interruptor sirve para los dos lados."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo)
+
+        assert provider.sent_text and "asesor" in provider.sent_text[0].body
 
 
 class TestLaSesionVenceALas24Horas:

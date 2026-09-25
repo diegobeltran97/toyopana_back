@@ -362,6 +362,23 @@ def _welcome_menu(phone: str) -> OutboundInteractive:
 # puede cotizar de verdad.
 # ---------------------------------------------------------------------------
 
+# APAGADO desde el 2026-09-25, a pedido del taller: prefieren que el cliente
+# quede en silencio y contestar ellos mismos, sin un mensaje del bot de por
+# medio. Lo que NO se apaga es ceder la conversación -- eso es lo que hace que
+# el bot se calle y que el chat quede marcado como pendiente de una persona.
+#
+# Se deja el texto en pie porque puede volver a servir. Pero OJO antes de
+# encenderlo: la redacción actual está mal. El acuse sale justo cuando NO
+# entendimos el mensaje, así que "Ya tenemos tus datos" afirma una comprensión
+# que no tenemos. Comprobado contra el código el 2026-09-25:
+#
+#     cliente: "aun no se la informacion"
+#     bot:     "¡Listo! 🙌 Ya tenemos tus datos."   <-- mentira
+#
+# Al encenderlo, cambiar a algo cierto pase lo que pase ("Un asesor revisa tu
+# mensaje y te ayuda con la cotización en breve").
+ACUSE_ACTIVO = False
+
 ACUSES: dict = {
     "menu_cotizacion": (
         "¡Listo! 🙌 Ya tenemos tus datos.\n\n"
@@ -504,7 +521,9 @@ async def _decide_reply(
             nodo_actual,
         )
         return Decision(
-            _acuse(nodo_actual, event.from_phone), nodo=nodo_actual, ceder=True
+            _acuse(nodo_actual, event.from_phone) if ACUSE_ACTIVO else None,
+            nodo=nodo_actual,
+            ceder=True,
         )
 
     # -- FUTURE: DecisionEngine(Claude).decide(event) goes here --
@@ -663,17 +682,20 @@ async def _sin_reventar(corutina, que: str) -> bool:
 async def _aplicar(
     provider: MessagingProvider, conversation_id: str, decision: Decision
 ) -> None:
-    """Manda la respuesta y deja la conversación donde corresponde.
+    """Manda la respuesta (si hay) y deja la conversación donde corresponde.
 
     El orden importa: primero se envía, y solo si el mensaje salió se guarda el
     nodo. Recordar un mensaje que nunca llegó deja al cliente mudo -- él no vio
     nada, y el bot creería que ya habló y no volvería a saludar.
-    """
-    if decision.mensaje is None:
-        return
 
-    if not await _send_reply(provider, conversation_id, decision.mensaje):
-        return
+    Una decisión SIN mensaje no es una decisión vacía: es el bot callándose a
+    propósito, y el estado hay que guardarlo igual. Salirse aquí dejaría la
+    conversación en 'bot' para siempre, con el bot evaluando cada mensaje y
+    nadie enterado de que hay un cliente esperando.
+    """
+    if decision.mensaje is not None:
+        if not await _send_reply(provider, conversation_id, decision.mensaje):
+            return
 
     await _sin_reventar(
         tocar_estado_bot(conversation_id=conversation_id, nodo=decision.nodo),
