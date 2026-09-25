@@ -7,7 +7,7 @@ because there is no longer a status code to put it in.
 Repositories and the provider are replaced with hand-written doubles.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -99,6 +99,15 @@ def repo(monkeypatch):
             self.status = "bot"
             self.messages = []
             self.window_touched = False
+            # El nodo que el bot mandó de último, y cuándo se tocó el estado.
+            # None/None es un chat frío: nadie ha hablado todavía.
+            self.bot_node = None
+            self.bot_node_at = None
+
+        def en_el_nodo(self, nodo, hace_horas=0.0):
+            """Deja la conversación como si el bot hubiera mandado ese nodo."""
+            self.bot_node = nodo
+            self.bot_node_at = datetime.now(timezone.utc) - timedelta(hours=hace_horas)
 
         async def upsert_conversation(self, **kwargs):
             # One conversation per chat, like the real UNIQUE
@@ -108,6 +117,11 @@ def repo(monkeypatch):
             return {
                 "id": CONVERSATION_ID if "50768510658" in chat else f"conv-{chat}",
                 "status": self.status,
+                # PostgREST devuelve las marcas de tiempo como texto ISO.
+                "bot_node": self.bot_node,
+                "bot_node_at": (
+                    self.bot_node_at.isoformat() if self.bot_node_at else None
+                ),
             }
 
         async def record_message(self, **kwargs):
@@ -116,10 +130,25 @@ def repo(monkeypatch):
         async def touch_last_inbound(self, **kwargs):
             self.window_touched = True
 
+        async def tocar_estado_bot(self, *, conversation_id, nodo=None):
+            self.bot_node_at = datetime.now(timezone.utc)
+            if nodo is not None:
+                self.bot_node = nodo
+
+        async def ceder_a_un_humano(self, *, conversation_id):
+            self.status = "waiting"
+
+        async def devolver_al_bot(self, *, conversation_id):
+            self.status = "bot"
+            self.bot_node = None
+
     r = Repo()
     monkeypatch.setattr(inbound_service, "upsert_conversation", r.upsert_conversation)
     monkeypatch.setattr(inbound_service, "record_message", r.record_message)
     monkeypatch.setattr(inbound_service, "touch_last_inbound", r.touch_last_inbound)
+    monkeypatch.setattr(inbound_service, "tocar_estado_bot", r.tocar_estado_bot)
+    monkeypatch.setattr(inbound_service, "ceder_a_un_humano", r.ceder_a_un_humano)
+    monkeypatch.setattr(inbound_service, "devolver_al_bot", r.devolver_al_bot)
     return r
 
 
@@ -709,3 +738,202 @@ class TestLaPalabraCitaTambienMandaElLink:
 
         enviado = provider.sent_text + provider.sent
         assert "/agenda/" not in (getattr(enviado[0], "body", "") or "")
+
+
+class TestElMenuNoSeRepite:
+    """El bot no vuelve a saludar a quien ya está conversando con él.
+
+    Capturado en producción el 2026-09-24. El cliente tocó "Cotización", el bot
+    le pidió la pieza y el vehículo, el cliente contestó "Jetour Dashing año
+    2025 los amortiguadores" -- y el bot le respondió con el menú de bienvenida
+    otra vez, como si acabara de escribir.
+
+    La causa: _decide_reply decidía SOLO con el mensaje que tenía enfrente.
+    Un texto libre que no pegaba con ninguna palabra clave caía al menú, y la
+    respuesta a la pregunta del propio bot es exactamente eso. Desde afuera el
+    bot se ve olvidadizo: preguntó, le contestaron, y volvió a empezar.
+
+    Ahora la conversación recuerda en qué nodo va. Si el bot ya habló, el menú
+    deja de ser una respuesta válida: se acusa recibo una vez y la conversación
+    pasa a un humano, que es quien puede cotizar.
+    """
+
+    async def _contesta(self, repo, texto="Jetour Dashing año 2025 los amortiguadores"):
+        provider = FakeProvider()
+        await entregar(provider, _event(body=texto))
+        return provider
+
+    async def test_la_respuesta_a_la_cotizacion_no_trae_el_menu(self, repo):
+        """El bug, tal cual salió en producción."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo)
+
+        assert provider.sent == []
+
+    async def test_la_respuesta_a_la_cotizacion_recibe_un_acuse(self, repo):
+        """Callarse del todo deja al cliente sin saber si lo leyeron."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo)
+
+        assert provider.sent_text and "asesor" in provider.sent_text[0].body
+
+    async def test_el_acuse_de_cotizacion_habla_de_precio(self, repo):
+        """Lo que el cliente está esperando es la cotización, no un 'gracias'."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo)
+
+        assert "precio" in provider.sent_text[0].body.lower()
+
+    async def test_despues_del_acuse_la_conversacion_pasa_a_un_humano(self, repo):
+        """El bot no sabe cotizar. Dejarlo 'bot' es prometer una respuesta que
+        nadie va a dar."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        await self._contesta(repo)
+
+        assert repo.status == "waiting"
+
+    async def test_el_menu_recien_mandado_tampoco_se_repite(self, repo):
+        """Ver el menú y escribir en vez de tocarlo es el mismo caso: el bot ya
+        habló, repetirse no agrega nada."""
+        repo.en_el_nodo("inicio")
+
+        provider = await self._contesta(repo, "necesito unas pastillas")
+
+        assert provider.sent == []
+
+    async def test_un_chat_frio_si_recibe_el_menu(self, repo):
+        """Sin nodo guardado nadie ha hablado: el menú es justo lo que toca."""
+        provider = await self._contesta(repo, "buenas")
+
+        assert len(provider.sent) == 1
+
+    async def test_una_palabra_clave_sigue_respondiendo_dentro_de_la_sesion(self, repo):
+        """Preguntar el horario a mitad de una cotización tiene respuesta, y es
+        el horario -- no el acuse."""
+        repo.en_el_nodo("menu_cotizacion")
+
+        provider = await self._contesta(repo, "y a que hora abren?")
+
+        assert "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_tocar_un_boton_sigue_funcionando_dentro_de_la_sesion(self, repo):
+        """Un toque es una intención explícita; la sesión no lo bloquea."""
+        repo.en_el_nodo("menu_cotizacion")
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_horarios"))
+
+        assert "Plaza Toledo" in provider.sent_text[0].body
+
+    async def test_guarda_el_nodo_que_acaba_de_mandar(self, repo):
+        """Sin esto la conversación no tiene memoria y el bug vuelve."""
+        await self._contesta(repo, "buenas")
+
+        assert repo.bot_node == "inicio"
+
+    async def test_un_boton_tambien_queda_guardado(self, repo):
+        provider = FakeProvider()
+
+        await entregar(provider, _event(reply_id="menu_cotizacion"))
+
+        assert repo.bot_node == "menu_cotizacion"
+
+    async def test_no_guarda_el_nodo_si_el_envio_falla(self, repo):
+        """Recordar un mensaje que nunca salió deja al cliente mudo: él no vio
+        nada y el bot cree que ya habló."""
+        provider = FakeProvider(Result.failure("rate_limit", status_code=429))
+
+        await entregar(provider, _event(body="buenas"))
+
+        assert repo.bot_node is None
+
+
+class TestLaSesionVenceALas24Horas:
+    """Quien vuelve al día siguiente trae una consulta nueva, y merece el menú.
+
+    La ventana se mide sobre el silencio DEL CLIENTE, no sobre la última vez
+    que habló el bot: el taller contesta desde su propio WhatsApp y esos
+    mensajes no nos llegan (parser.py descarta from_me). Medir desde el bot
+    haría que apareciera el menú en medio de una conversación que un humano
+    está atendiendo -- justo lo que el estado 'agent' existe para evitar.
+    """
+
+    async def _escribe(self, repo, texto="buenas"):
+        provider = FakeProvider()
+        await entregar(provider, _event(body=texto))
+        return provider
+
+    async def test_a_las_23_horas_todavia_no_vuelve_el_menu(self, repo):
+        repo.en_el_nodo("menu_cotizacion", hace_horas=23)
+
+        provider = await self._escribe(repo, "sigo esperando")
+
+        assert provider.sent == []
+
+    async def test_a_las_25_horas_el_menu_vuelve(self, repo):
+        repo.en_el_nodo("menu_cotizacion", hace_horas=25)
+
+        provider = await self._escribe(repo)
+
+        assert len(provider.sent) == 1
+
+    async def test_mientras_el_bot_esta_callado_no_responde(self, repo):
+        repo.status = "waiting"
+        repo.en_el_nodo("menu_cotizacion", hace_horas=2)
+
+        provider = await self._escribe(repo, "hola? estan ahi?")
+
+        assert provider.sent == [] and provider.sent_text == []
+
+    async def test_el_cliente_que_vuelve_al_dia_siguiente_reactiva_el_bot(self, repo):
+        repo.status = "waiting"
+        repo.en_el_nodo("menu_cotizacion", hace_horas=25)
+
+        provider = await self._escribe(repo)
+
+        assert len(provider.sent) == 1
+
+    async def test_al_reactivarse_la_conversacion_vuelve_a_ser_del_bot(self, repo):
+        """Si el estado se queda en 'waiting', el bot contesta una vez y se
+        vuelve a callar en el mensaje siguiente."""
+        repo.status = "waiting"
+        repo.en_el_nodo("menu_cotizacion", hace_horas=25)
+
+        await self._escribe(repo)
+
+        assert repo.status == "bot"
+
+    async def test_escribir_mientras_esta_callado_reinicia_el_reloj(self, repo):
+        """Un cliente que insiste cada pocas horas NO está en silencio: el menú
+        no puede aparecerle a las 24 horas del último mensaje del bot."""
+        repo.status = "waiting"
+        repo.en_el_nodo("menu_cotizacion", hace_horas=23)
+
+        await self._escribe(repo, "hola?")
+
+        assert datetime.now(timezone.utc) - repo.bot_node_at < timedelta(minutes=1)
+
+    async def test_un_waiting_puesto_a_mano_no_se_reactiva(self, repo):
+        """Sin marca de tiempo el reloj nunca corrió: ese 'waiting' lo puso una
+        persona, no el bot. Reactivarlo es quitarle la conversación a alguien
+        que la tomó a propósito."""
+        repo.status = "waiting"
+
+        provider = await self._escribe(repo)
+
+        assert provider.sent == [] and provider.sent_text == []
+
+    async def test_no_le_quita_la_conversacion_a_un_humano(self, repo):
+        """'agent' lo pone una persona que tomó el chat. Solo se reactiva lo que
+        el propio bot silenció ('waiting'); resucitar sobre un humano es el
+        error que el estado existe para impedir."""
+        repo.status = "agent"
+        repo.en_el_nodo("menu_cotizacion", hace_horas=48)
+
+        provider = await self._escribe(repo)
+
+        assert provider.sent == [] and provider.sent_text == []

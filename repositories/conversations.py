@@ -97,6 +97,58 @@ async def record_message(
     response.raise_for_status()
 
 
+async def _patch_conversacion(conversation_id: str, campos: Dict[str, Any]) -> None:
+    """Actualiza una conversación por id. El verbo común de las tres de abajo."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        response = await http.patch(
+            f"{_base_url()}/wa_conversations",
+            json=campos,
+            headers=_headers("return=minimal"),
+            params={"id": f"eq.{conversation_id}"},
+        )
+    response.raise_for_status()
+
+
+async def tocar_estado_bot(*, conversation_id: str, nodo: Optional[str] = None) -> None:
+    """Marca que hubo actividad en esta conversación, y en qué nodo va.
+
+    `bot_node_at` se refresca SIEMPRE: es el reloj de la ventana de sesión, y lo
+    que mide es el silencio del cliente. El taller contesta desde su propio
+    WhatsApp y esos mensajes no nos llegan (parser.py descarta from_me), así que
+    la única señal de vida que tenemos es que el cliente escriba.
+
+    `nodo` es opcional a propósito. Cuando el bot está callado hay que mover el
+    reloj sin tocar el nodo: la conversación sigue donde estaba, solo que más
+    reciente.
+    """
+    campos: Dict[str, Any] = {"bot_node_at": "now()"}
+    if nodo is not None:
+        campos["bot_node"] = nodo
+    await _patch_conversacion(conversation_id, campos)
+
+
+async def ceder_a_un_humano(*, conversation_id: str) -> None:
+    """Saca al bot de la conversación: de ahora en adelante contesta una persona.
+
+    'waiting' y no 'agent': nadie la ha tomado todavía, solo está esperando a
+    que alguien lo haga. La diferencia importa porque 'waiting' es el único
+    estado que el bot puede revertir solo (ver devolver_al_bot).
+    """
+    await _patch_conversacion(conversation_id, {"status": "waiting"})
+
+
+async def devolver_al_bot(*, conversation_id: str) -> None:
+    """Devuelve la conversación al bot y la deja sin nodo: empieza de cero.
+
+    Solo se llama sobre conversaciones que el propio bot silenció y que llevan
+    más de la ventana de sesión sin un mensaje del cliente. Limpiar `bot_node`
+    es lo que hace que el saludo vuelva a ser la respuesta correcta.
+    """
+    await _patch_conversacion(
+        conversation_id, {"status": "bot", "bot_node": None}
+    )
+
+
 async def touch_last_inbound(*, organization_id: str, phone: str) -> None:
     """Stamp customers.last_inbound_at, the 24h customer-service window.
 
